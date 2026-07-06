@@ -105,6 +105,8 @@ button:
 
 This platform implements the special Fujitsu protocol of the `AR-RLB2J` remote.
 
+**Verified remotes:** `AR-RLB2J`, `AR-RLB1J`
+
 ```yaml
 climate:
   - platform: fujitsu_264
@@ -139,6 +141,42 @@ button:
             // Acceptable values are 1-7 and 15(means stay)
             id(my_climate).set_fan_angle(1);
 ```
+
+#### Internal clean
+
+You can call the `set_clean()` method on the climate controller to enable or disable the internal clean function.
+
+```yaml
+switch:
+  - platform: template
+    name: 'Clean'
+    optimistic: true
+    turn_on_action:
+      then:
+        - lambda: |-
+            id(my_climate).set_clean(true);
+    turn_off_action:
+      then:
+        - lambda: |-
+            id(my_climate).set_clean(false);
+```
+
+#### Sterilization
+
+You can call the `toggle_sterilization()` method on the climate controller.
+
+```yaml
+button:
+  - platform: template
+    name: 'Toggle sterilization'
+    on_press:
+      then:
+        - lambda: |-
+            id(my_climate).toggle_sterilization();
+```
+
+> [!NOTE]
+> The sterilization command is only accepted by the unit while it is powered off.
 
 ## panasonic
 
@@ -178,6 +216,8 @@ climate:
 ```
 
 ## Changelog
+
+- **2026.07.06**: Add `set_clean()` and `toggle_sterilization()` methods to fujitsu-264 platform, verified with `AR-RLB1J` remote
 
 - **2026.06.06**: Add `horizontal_swing` to Fujitsu platform
 - **2026.05.16**: Add Eco and Powerful presets to Fujitsu platform
