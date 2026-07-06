@@ -48,6 +48,17 @@ namespace esphome
             this->send();
         }
 
+        void Fujitsu264Climate::set_weak_dry(const bool weak_dry)
+        {
+            this->weak_dry_ = weak_dry;
+            ESP_LOGI(TAG, "Set weak dry to %s", weak_dry ? "ON" : "OFF");
+            // retransmit only if the change is relevant now
+            if (this->mode == climate::CLIMATE_MODE_DRY)
+            {
+                this->transmit_state();
+            }
+        }
+
         void Fujitsu264Climate::transmit_state()
         {
             this->apply_state();
@@ -130,7 +141,7 @@ namespace esphome
                     this->ac_.setMode(kFujitsuAc264ModeCool);
                     break;
                 case climate::CLIMATE_MODE_DRY:
-                    this->ac_.setMode(kFujitsuAc264ModeDry);
+                    this->ac_.setMode(kFujitsuAc264ModeDry, this->weak_dry_);
                     break;
                 case climate::CLIMATE_MODE_FAN_ONLY:
                     this->ac_.setMode(kFujitsuAc264ModeFan);

@@ -24,6 +24,7 @@ namespace esphome
             void toggle_powerful();
             void set_clean(const bool clean);
             void toggle_sterilization();
+            void set_weak_dry(const bool weak_dry);
 
         protected:
             void transmit_state() override;
@@ -33,6 +34,7 @@ namespace esphome
             void apply_state();
 
             IRFujitsuAC264 ac_ = IRFujitsuAC264(255); // pin is not used
+            bool weak_dry_ = false;
         };
     } // namespace fujitsu_264
 } // namespace esphome

@@ -161,6 +161,25 @@ switch:
             id(my_climate).set_clean(false);
 ```
 
+#### Weak dry
+
+You can call the `set_weak_dry()` method on the climate controller to switch the dry mode between normal and weak ("ひかえめ"). The setting is applied the next time dry mode is transmitted (immediately if the unit is already in dry mode).
+
+```yaml
+switch:
+  - platform: template
+    name: 'Weak dry'
+    optimistic: true
+    turn_on_action:
+      then:
+        - lambda: |-
+            id(my_climate).set_weak_dry(true);
+    turn_off_action:
+      then:
+        - lambda: |-
+            id(my_climate).set_weak_dry(false);
+```
+
 #### Sterilization
 
 You can call the `toggle_sterilization()` method on the climate controller.
@@ -217,7 +236,7 @@ climate:
 
 ## Changelog
 
-- **2026.07.06**: Add `set_clean()` and `toggle_sterilization()` methods to fujitsu-264 platform, verified with `AR-RLB1J` remote
+- **2026.07.06**: Add `set_clean()`, `toggle_sterilization()` and `set_weak_dry()` methods to fujitsu-264 platform, verified with `AR-RLB1J` remote
 
 - **2026.06.06**: Add `horizontal_swing` to Fujitsu platform
 - **2026.05.16**: Add Eco and Powerful presets to Fujitsu platform

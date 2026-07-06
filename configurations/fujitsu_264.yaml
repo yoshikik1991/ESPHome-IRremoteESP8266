@@ -57,3 +57,15 @@ switch:
       then:
         - lambda: |-
             id(my_fujitsu_264).set_clean(false);
+
+  - platform: template
+    name: 'Weak dry'
+    optimistic: true
+    turn_on_action:
+      then:
+        - lambda: |-
+            id(my_fujitsu_264).set_weak_dry(true);
+    turn_off_action:
+      then:
+        - lambda: |-
+            id(my_fujitsu_264).set_weak_dry(false);
