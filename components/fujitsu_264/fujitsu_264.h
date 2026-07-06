@@ -22,6 +22,8 @@ namespace esphome
 
             void set_fan_angle(const uint8_t fan_angle);
             void toggle_powerful();
+            void set_clean(const bool clean);
+            void toggle_sterilization();
 
         protected:
             void transmit_state() override;

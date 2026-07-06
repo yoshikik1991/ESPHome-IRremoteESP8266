@@ -34,6 +34,20 @@ namespace esphome
             this->send();
         }
 
+        void Fujitsu264Climate::set_clean(const bool clean)
+        {
+            this->ac_.setClean(clean);
+            ESP_LOGI(TAG, "Set clean mode to %s", clean ? "ON" : "OFF");
+            this->send();
+        }
+
+        void Fujitsu264Climate::toggle_sterilization()
+        {
+            this->ac_.toggleSterilization();
+            ESP_LOGI(TAG, "Toggled sterilization");
+            this->send();
+        }
+
         void Fujitsu264Climate::transmit_state()
         {
             this->apply_state();

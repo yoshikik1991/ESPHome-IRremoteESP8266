@@ -37,3 +37,23 @@ button:
       then:
         - lambda: |-
             id(my_fujitsu_264).set_fan_angle(1);
+
+  - platform: template
+    name: 'Toggle sterilization'
+    on_press:
+      then:
+        - lambda: |-
+            id(my_fujitsu_264).toggle_sterilization();
+
+switch:
+  - platform: template
+    name: 'Clean'
+    optimistic: true
+    turn_on_action:
+      then:
+        - lambda: |-
+            id(my_fujitsu_264).set_clean(true);
+    turn_off_action:
+      then:
+        - lambda: |-
+            id(my_fujitsu_264).set_clean(false);
