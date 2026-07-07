@@ -112,6 +112,22 @@ namespace esphome
             }
         }
 
+        void Fujitsu264Climate::set_temp_auto_offset(const float offset)
+        {
+            // No-op when unchanged, for the same feedback-loop reason as
+            // set_weak_dry(): received frames are synced back into the HA number
+            // entity, whose on_value handler calls this again.
+            if (this->temp_auto_offset_ == offset)
+                return;
+            this->temp_auto_offset_ = offset;
+            ESP_LOGI(TAG, "Set auto-mode temperature offset to %.1f", offset);
+            // retransmit only if the change is relevant now
+            if (this->mode == climate::CLIMATE_MODE_HEAT_COOL)
+            {
+                this->transmit_state();
+            }
+        }
+
         void Fujitsu264Climate::transmit_state()
         {
             this->apply_state();
@@ -219,7 +235,16 @@ namespace esphome
                 break;
             }
 
-            this->target_temperature = this->ac_.getTemp();
+            if (this->mode == climate::CLIMATE_MODE_HEAT_COOL)
+            {
+                // Auto mode carries a -2..+2 offset instead of an absolute target.
+                this->temp_auto_offset_ = this->ac_.getTempAuto();
+                this->target_temperature = 24.0f;
+            }
+            else
+            {
+                this->target_temperature = this->ac_.getTemp();
+            }
             this->swing_mode = this->ac_.getSwing() ? climate::CLIMATE_SWING_VERTICAL : climate::CLIMATE_SWING_OFF;
             this->weak_dry_ = this->ac_.isWeakDry();
 
@@ -236,7 +261,19 @@ namespace esphome
             }
             else
             {
-                this->ac_.setTemp(this->target_temperature);
+                if (this->mode == climate::CLIMATE_MODE_HEAT_COOL)
+                {
+                    // In auto mode the AC picks the base temperature itself and only
+                    // accepts a -2..+2 offset (TempAuto), so the absolute target
+                    // temperature is meaningless: pin the display to 24 and send the
+                    // offset instead.
+                    this->target_temperature = 24.0f;
+                    this->ac_.setTempAuto(this->temp_auto_offset_);
+                }
+                else
+                {
+                    this->ac_.setTemp(this->target_temperature);
+                }
 
                 if (this->fan_mode.has_value())
                 {

@@ -28,6 +28,13 @@ namespace esphome
             void toggle_sterilization();
             void set_weak_dry(const bool weak_dry);
 
+            /// Temperature adjustment used in auto (heat/cool) mode, -2.0..+2.0 in
+            /// 0.5 steps. In auto mode the AC picks the base temperature itself, so
+            /// the climate entity's absolute target temperature is meaningless and
+            /// pinned to 24; this offset is the only effective control.
+            void set_temp_auto_offset(const float offset);
+            float get_temp_auto_offset() const { return this->temp_auto_offset_; }
+
             /// Sync state from a frame captured by ESPHome's built-in AEHA decoder
             /// (e.g. the real remote was used). raw_address/raw_data are bit-reversed
             /// by that decoder relative to the wire encoding; this un-reverses them
@@ -45,6 +52,7 @@ namespace esphome
 
             IRFujitsuAC264 ac_ = IRFujitsuAC264(255); // pin is not used
             bool weak_dry_ = false;
+            float temp_auto_offset_ = 0;
 
             // Timestamp of our last transmission, so update_from_aeha() can ignore
             // our own signal bouncing back into the IR receiver.
