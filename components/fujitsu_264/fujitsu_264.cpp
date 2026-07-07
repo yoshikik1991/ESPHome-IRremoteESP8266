@@ -29,7 +29,21 @@ namespace esphome
 
         void Fujitsu264Climate::toggle_powerful()
         {
-            this->ac_.togglePowerful();
+            // Note: IRFujitsuAC264::togglePowerful() silently no-ops unless the
+            // library's internal _ispoweredon flag is true, but that flag is only
+            // ever set inside IRFujitsuAC264::send(), which we never call (we
+            // transmit via ESPHome's sendGeneric() instead). So it's always false
+            // and the toggle command never actually gets sent. Work around this by
+            // checking the climate's own (accurate) power state and writing the
+            // toggle-powerful frame directly via the public setRaw() API, which
+            // reproduces exactly what togglePowerful() does internally minus the
+            // broken guard.
+            if (this->mode == climate::CLIMATE_MODE_OFF)
+            {
+                ESP_LOGW(TAG, "Ignoring powerful mode toggle: AC is off");
+                return;
+            }
+            this->ac_.setRaw(kFujitsuAc264StatesTogglePowerful, kFujitsuAc264StateLengthShort);
             ESP_LOGI(TAG, "Toggled powerful mode");
             this->send();
         }
