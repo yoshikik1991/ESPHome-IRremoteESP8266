@@ -141,13 +141,6 @@ namespace esphome
             uint8_t *message = this->ac_.getRaw();
             uint8_t length = this->ac_.getStateLength();
 
-            // Wire-order dump of what we're about to transmit, so a fan-speed or
-            // swing change from HA can be compared byte-for-byte against the
-            // corresponding real-remote capture logged in update_from_aeha().
-            // Cmd is raw[18] on full-length frames.
-            ESP_LOGD(TAG, "Sending frame (%u bytes): %s", length,
-                     format_hex_pretty(message, length).c_str());
-
             sendGeneric(
                 kFujitsuAcHdrMark, kFujitsuAcHdrSpace,
                 kFujitsuAcBitMark, kFujitsuAcOneSpace,
