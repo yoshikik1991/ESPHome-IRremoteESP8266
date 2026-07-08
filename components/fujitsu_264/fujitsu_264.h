@@ -15,11 +15,24 @@ namespace esphome
         class Fujitsu264Climate : public ir_remote_base::IrRemoteBase
         {
         public:
+            // Custom fan mode labels matching the real remote's own terms (rather
+            // than ESPHome's generic Low/Medium/High), requested so the HA UI
+            // reads the same as the physical remote.
+            static constexpr const char *kFanModeAuto = "自動";
+            static constexpr const char *kFanModeQuiet = "静音";
+            static constexpr const char *kFanModeLow = "微風";
+            static constexpr const char *kFanModeMedium = "弱風";
+            static constexpr const char *kFanModeHigh = "強風";
+
             Fujitsu264Climate()
                 : IrRemoteBase(kFujitsuAc264MinTemp, kFujitsuAc264MaxTemp, 0.5f, true, true,
-                               {climate::CLIMATE_FAN_AUTO, climate::CLIMATE_FAN_LOW, climate::CLIMATE_FAN_MEDIUM, climate::CLIMATE_FAN_HIGH, climate::CLIMATE_FAN_QUIET},
+                               {},
                                {climate::CLIMATE_SWING_OFF, climate::CLIMATE_SWING_VERTICAL,
-                                climate::CLIMATE_SWING_HORIZONTAL, climate::CLIMATE_SWING_BOTH}) {}
+                                climate::CLIMATE_SWING_HORIZONTAL, climate::CLIMATE_SWING_BOTH})
+            {
+                this->set_supported_custom_fan_modes(
+                    {kFanModeAuto, kFanModeQuiet, kFanModeLow, kFanModeMedium, kFanModeHigh});
+            }
 
             void setup() override;
 
@@ -61,6 +74,7 @@ namespace esphome
             bool get_clean() const { return this->ac_.getClean(); }
 
         protected:
+            void control(const climate::ClimateCall &call) override;
             void transmit_state() override;
 
         private:

@@ -66,6 +66,17 @@ namespace esphome
             this->apply_state();
         }
 
+        void Fujitsu264Climate::control(const climate::ClimateCall &call)
+        {
+            // ClimateIR::control() (below) only reads the standard fan_mode enum;
+            // since we expose custom fan modes instead (real-remote labels, not
+            // ESPHome's generic Low/Medium/High), it never sees a plain fan_mode
+            // call. Apply the custom one ourselves first.
+            if (call.has_custom_fan_mode())
+                this->set_custom_fan_mode_(call.get_custom_fan_mode());
+            climate_ir::ClimateIR::control(call);
+        }
+
         void Fujitsu264Climate::set_fan_angle(const uint8_t fan_angle)
         {
             this->ac_.setFanAngle(fan_angle);
@@ -76,6 +87,15 @@ namespace esphome
         void Fujitsu264Climate::set_vertical_angle(const uint8_t level)
         {
             const uint8_t clamped = std::min<uint8_t>(std::max<uint8_t>(level, 1), 8);
+            // No-op when unchanged. This also breaks the feedback loop where our
+            // own transmission is picked up by the IR receiver, synced back into
+            // this select via update_from_aeha(), and would otherwise be
+            // re-transmitted forever (same reason as set_weak_dry()). Note this
+            // means re-selecting the same already-remembered angle while swing is
+            // still on won't force a stop -- switch the climate's swing control
+            // to OFF for that instead.
+            if (this->vertical_angle_ == clamped)
+                return;
             this->vertical_angle_ = clamped;
 
             // Picking an explicit angle stops continuous vertical swing (matches a
@@ -108,6 +128,9 @@ namespace esphome
         void Fujitsu264Climate::set_horizontal_angle(const uint8_t level)
         {
             const uint8_t clamped = std::min<uint8_t>(std::max<uint8_t>(level, 1), 5);
+            // No-op guard: same reason as set_vertical_angle() above.
+            if (this->horizontal_angle_ == clamped)
+                return;
             this->horizontal_angle_ = clamped;
             this->horizontal_swing_ = false;
 
@@ -317,19 +340,19 @@ namespace esphome
             switch (this->ac_.getFanSpeed())
             {
             case kFujitsuAc264FanSpeedQuiet:
-                this->fan_mode = climate::CLIMATE_FAN_QUIET;
+                this->set_custom_fan_mode_(kFanModeQuiet);
                 break;
             case kFujitsuAc264FanSpeedLow:
-                this->fan_mode = climate::CLIMATE_FAN_LOW;
+                this->set_custom_fan_mode_(kFanModeLow);
                 break;
             case kFujitsuAc264FanSpeedMed:
-                this->fan_mode = climate::CLIMATE_FAN_MEDIUM;
+                this->set_custom_fan_mode_(kFanModeMedium);
                 break;
             case kFujitsuAc264FanSpeedHigh:
-                this->fan_mode = climate::CLIMATE_FAN_HIGH;
+                this->set_custom_fan_mode_(kFanModeHigh);
                 break;
             default:
-                this->fan_mode = climate::CLIMATE_FAN_AUTO;
+                this->set_custom_fan_mode_(kFanModeAuto);
                 break;
             }
 
@@ -408,29 +431,21 @@ namespace esphome
                     this->ac_.setTemp(this->target_temperature);
                 }
 
-                if (this->fan_mode.has_value())
+                if (this->has_custom_fan_mode())
                 {
-                    switch (this->fan_mode.value())
-                    {
-                    case climate::CLIMATE_FAN_AUTO:
+                    const auto fan = this->get_custom_fan_mode();
+                    if (fan == kFanModeAuto)
                         this->ac_.setFanSpeed(kFujitsuAc264FanSpeedAuto);
-                        break;
-                    case climate::CLIMATE_FAN_QUIET:
+                    else if (fan == kFanModeQuiet)
                         this->ac_.setFanSpeed(kFujitsuAc264FanSpeedQuiet);
-                        break;
-                    case climate::CLIMATE_FAN_LOW:
+                    else if (fan == kFanModeLow)
                         this->ac_.setFanSpeed(kFujitsuAc264FanSpeedLow);
-                        break;
-                    case climate::CLIMATE_FAN_MEDIUM:
+                    else if (fan == kFanModeMedium)
                         this->ac_.setFanSpeed(kFujitsuAc264FanSpeedMed);
-                        break;
-                    case climate::CLIMATE_FAN_HIGH:
+                    else if (fan == kFanModeHigh)
                         this->ac_.setFanSpeed(kFujitsuAc264FanSpeedHigh);
-                        break;
-                    default:
-                        ESP_LOGW(TAG, "Unknown fan mode: %d", this->fan_mode.value());
-                        break;
-                    }
+                    else
+                        ESP_LOGW(TAG, "Unknown custom fan mode: %s", fan.c_str());
                 }
 
                 const bool want_vertical = (this->swing_mode == climate::CLIMATE_SWING_VERTICAL ||
