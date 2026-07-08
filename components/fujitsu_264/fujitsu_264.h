@@ -54,6 +54,12 @@ namespace esphome
             bool weak_dry_ = false;
             float temp_auto_offset_ = 0;
 
+            // Climate mode as of the last apply_state()/update_from_aeha(), used
+            // by apply_state() to tell a power-on / mode change (frame must carry
+            // a mode-change Cmd) from a fan-speed/swing-only change (frame must
+            // carry CmdFanSpeed/CmdSwing instead, like the real remote does).
+            climate::ClimateMode prev_mode_ = climate::CLIMATE_MODE_OFF;
+
             // Timestamp of our last transmission, so update_from_aeha() can ignore
             // our own signal bouncing back into the IR receiver.
             uint32_t last_tx_ms_ = 0;

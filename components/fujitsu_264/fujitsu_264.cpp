@@ -1,5 +1,7 @@
 #include <cstring>
 
+#include "esphome/core/helpers.h"
+
 #include "fujitsu_264.h"
 
 namespace esphome
@@ -169,12 +171,21 @@ namespace esphome
             for (uint8_t b : raw_data)
                 raw.push_back(reverse_bits8(b));
 
+            // Full wire-order dump of every frame from the real remote, including
+            // ones we don't understand yet. This is the capture tool for mapping
+            // unknown buttons (e.g. horizontal swing, which has no field in the
+            // library's Fujitsu264Protocol): press the button, read the bytes here.
+            // Cmd is raw[18] on full-length frames.
+            ESP_LOGD(TAG, "AEHA frame from remote (%u bytes): %s", raw.size(),
+                     format_hex_pretty(raw.data(), raw.size()).c_str());
+
             // Power-off is a short special frame with no mode/temp/fan payload.
             if (raw.size() == kFujitsuAc264StateLengthShort &&
                 std::memcmp(raw.data(), kFujitsuAc264StatesTurnOff, kFujitsuAc264StateLengthShort) == 0)
             {
                 ESP_LOGI(TAG, "Synced state from real remote: OFF");
                 this->mode = climate::CLIMATE_MODE_OFF;
+                this->prev_mode_ = this->mode;
                 this->publish_state();
                 return true;
             }
@@ -247,6 +258,7 @@ namespace esphome
             }
             this->swing_mode = this->ac_.getSwing() ? climate::CLIMATE_SWING_VERTICAL : climate::CLIMATE_SWING_OFF;
             this->weak_dry_ = this->ac_.isWeakDry();
+            this->prev_mode_ = this->mode;
 
             ESP_LOGI(TAG, "Synced state from real remote: %s", this->ac_.toString().c_str());
             this->publish_state();
@@ -255,6 +267,14 @@ namespace esphome
 
         void Fujitsu264Climate::apply_state()
         {
+            // Previous state, to detect below which single parameter this
+            // transmission is actually changing.
+            const bool was_on = this->prev_mode_ != climate::CLIMATE_MODE_OFF;
+            const bool mode_changed = this->mode != this->prev_mode_;
+            const uint8_t prev_fan_speed = this->ac_.getFanSpeed();
+            const bool prev_swing = this->ac_.getSwing();
+            this->prev_mode_ = this->mode;
+
             if (this->mode == climate::CLIMATE_MODE_OFF)
             {
                 this->ac_.off();
@@ -334,6 +354,22 @@ namespace esphome
                 default:
                     ESP_LOGW(TAG, "Unknown mode: %d", this->mode);
                     break;
+                }
+
+                // The AC applies only the parameter named by the frame's Cmd byte
+                // (raw[18]): the real remote sends CmdFanSpeed (0x1E) for a fan
+                // change and CmdSwing (0x0B) for a swing change. setMode() above
+                // unconditionally stamps a mode-change Cmd (SubCmd=1), which made
+                // fan-speed/swing-only changes from HA get ignored by the unit.
+                // When neither power nor mode changed, re-stamp the Cmd to name
+                // what did change. Temperature is left on the mode Cmd: that path
+                // is verified working on the real unit.
+                if (was_on && !mode_changed)
+                {
+                    if (this->ac_.getFanSpeed() != prev_fan_speed)
+                        this->ac_.setCmd(kFujitsuAc264CmdFanSpeed);
+                    else if (this->ac_.getSwing() != prev_swing)
+                        this->ac_.setCmd(kFujitsuAc264CmdSwing);
                 }
             }
 
