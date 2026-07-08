@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cstring>
 
 #include "esphome/core/helpers.h"
@@ -22,6 +23,15 @@ namespace esphome
         // Ignore AEHA frames received within this long of our own transmission,
         // since the IR receiver picks up our own LED's reflection/crosstalk.
         static const uint32_t kRxLockoutMs = 500;
+
+        // Undocumented Cmd for setting the horizontal (left/right) louver angle,
+        // the sibling of the library's own kFujitsuAc264CmdFanAngle (0x22, which
+        // sets the vertical angle). Reverse-engineered from a real-remote capture:
+        // "turn off horizontal swing at a fixed position" frames carry this Cmd.
+        static const uint8_t kFujitsuAc264CmdFanAngleHoriz = 0x26;
+        // raw[10] bit for horizontal swing enable, alongside the library's own
+        // Swing bit (bit 4, vertical) in the same byte. Also reverse-engineered.
+        static const uint8_t kFujitsuAc264HorizontalSwingBit = 0x20;
 
         static const char *const TAG = "fujitsu_264.climate";
 
@@ -60,6 +70,63 @@ namespace esphome
         {
             this->ac_.setFanAngle(fan_angle);
             ESP_LOGI(TAG, "Set fan angle to %d", fan_angle);
+            this->send();
+        }
+
+        void Fujitsu264Climate::set_vertical_angle(const uint8_t level)
+        {
+            const uint8_t clamped = std::min<uint8_t>(std::max<uint8_t>(level, 1), 8);
+            this->vertical_angle_ = clamped;
+
+            // Picking an explicit angle stops continuous vertical swing (matches a
+            // real-remote capture: fixed-angle frames have the Swing bit clear).
+            // Call setSwing() first so its Cmd/FanAngle=Stay get overwritten by
+            // setFanAngle() below, not the other way around.
+            this->ac_.setSwing(false);
+            // The library's setFanAngle() only accepts 1-7 (clamps 8 to "Stay"),
+            // but this unit has 8 vertical positions (confirmed: a real "lowest
+            // position" capture has raw[28]'s low nibble = 0x8). Route around the
+            // clamp for level 8 by writing the nibble directly; checkSum() never
+            // touches the low nibble of raw[28], so this survives to send().
+            this->ac_.setFanAngle(std::min<uint8_t>(clamped, 7));
+            if (clamped == 8)
+            {
+                uint8_t *raw = this->ac_.getRaw();
+                raw[28] = (raw[28] & 0xF0) | 0x08;
+            }
+
+            if (this->swing_mode == climate::CLIMATE_SWING_VERTICAL)
+                this->swing_mode = climate::CLIMATE_SWING_OFF;
+            else if (this->swing_mode == climate::CLIMATE_SWING_BOTH)
+                this->swing_mode = climate::CLIMATE_SWING_HORIZONTAL;
+
+            ESP_LOGI(TAG, "Set vertical angle to %d", clamped);
+            this->publish_state();
+            this->send();
+        }
+
+        void Fujitsu264Climate::set_horizontal_angle(const uint8_t level)
+        {
+            const uint8_t clamped = std::min<uint8_t>(std::max<uint8_t>(level, 1), 5);
+            this->horizontal_angle_ = clamped;
+            this->horizontal_swing_ = false;
+
+            if (this->swing_mode == climate::CLIMATE_SWING_HORIZONTAL)
+                this->swing_mode = climate::CLIMATE_SWING_OFF;
+            else if (this->swing_mode == climate::CLIMATE_SWING_BOTH)
+                this->swing_mode = climate::CLIMATE_SWING_VERTICAL;
+
+            // No native library support for horizontal angle at all -- raw[10]
+            // bit 5 and raw[28]'s high nibble were reverse-engineered from a
+            // real-remote capture. getRaw() also primes the fixed/checksum bytes;
+            // send() will patch Cmd/raw[28]/checksum for the actual angle value
+            // (see pending_horizontal_angle_ there for why it can't be done here).
+            uint8_t *raw = this->ac_.getRaw();
+            raw[10] &= ~kFujitsuAc264HorizontalSwingBit;
+            this->pending_horizontal_angle_ = true;
+
+            ESP_LOGI(TAG, "Set horizontal angle to %d", clamped);
+            this->publish_state();
             this->send();
         }
 
@@ -140,6 +207,26 @@ namespace esphome
         {
             uint8_t *message = this->ac_.getRaw();
             uint8_t length = this->ac_.getStateLength();
+
+            if (this->pending_horizontal_angle_)
+            {
+                // checkSum() (invoked by getRaw() above) unconditionally forces
+                // raw[28]'s high nibble to 0xF, assuming it's unused -- but on this
+                // unit it's the horizontal angle. Overwrite it and Cmd, then
+                // recompute the checksum ourselves to undo that clobber.
+                message[18] = kFujitsuAc264CmdFanAngleHoriz;
+                message[28] = (message[28] & 0x0F) | (this->horizontal_angle_ << 4);
+                uint8_t sum = 0;
+                for (uint8_t i = 0; i < length - 1; i++)
+                    sum += message[i];
+                message[length - 1] = static_cast<uint8_t>(0xAF - sum);
+                this->pending_horizontal_angle_ = false;
+            }
+
+            // Logged at INFO (not DEBUG) so a fan-speed/swing change can be
+            // diffed against a real-remote capture without switching log levels.
+            ESP_LOGI(TAG, "Sending frame (%u bytes): %s", length,
+                     format_hex_pretty(message, length).c_str());
 
             sendGeneric(
                 kFujitsuAcHdrMark, kFujitsuAcHdrSpace,
@@ -256,7 +343,32 @@ namespace esphome
             {
                 this->target_temperature = this->ac_.getTemp();
             }
-            this->swing_mode = this->ac_.getSwing() ? climate::CLIMATE_SWING_VERTICAL : climate::CLIMATE_SWING_OFF;
+            // Vertical swing/angle come from the library (ac_.setRaw() above
+            // already parsed them). Horizontal has no library support at all, so
+            // read raw[10] bit 5 and raw[28]'s high nibble directly from the
+            // vector we just built -- NOT via ac_.getRaw(), which would run
+            // checkSum() and clobber raw[28]'s high nibble before we can read it.
+            const bool vertical_on = this->ac_.getSwing();
+            const bool horizontal_on = (raw[10] & kFujitsuAc264HorizontalSwingBit) != 0;
+            this->horizontal_swing_ = horizontal_on;
+            if (vertical_on && horizontal_on)
+                this->swing_mode = climate::CLIMATE_SWING_BOTH;
+            else if (vertical_on)
+                this->swing_mode = climate::CLIMATE_SWING_VERTICAL;
+            else if (horizontal_on)
+                this->swing_mode = climate::CLIMATE_SWING_HORIZONTAL;
+            else
+                this->swing_mode = climate::CLIMATE_SWING_OFF;
+
+            // 0xF ("stay") isn't a real fixed position, so only remember an
+            // actual angle value when one was sent.
+            const uint8_t vertical_angle = raw[28] & 0x0F;
+            if (vertical_angle != 0x0F)
+                this->vertical_angle_ = vertical_angle;
+            const uint8_t horizontal_angle = (raw[28] >> 4) & 0x0F;
+            if (horizontal_angle != 0x0F)
+                this->horizontal_angle_ = horizontal_angle;
+
             this->weak_dry_ = this->ac_.isWeakDry();
             this->prev_mode_ = this->mode;
 
@@ -272,7 +384,8 @@ namespace esphome
             const bool was_on = this->prev_mode_ != climate::CLIMATE_MODE_OFF;
             const bool mode_changed = this->mode != this->prev_mode_;
             const uint8_t prev_fan_speed = this->ac_.getFanSpeed();
-            const bool prev_swing = this->ac_.getSwing();
+            const bool prev_vertical_swing = this->ac_.getSwing();
+            const bool prev_horizontal_swing = this->horizontal_swing_;
             this->prev_mode_ = this->mode;
 
             if (this->mode == climate::CLIMATE_MODE_OFF)
@@ -320,18 +433,21 @@ namespace esphome
                     }
                 }
 
-                switch (this->swing_mode)
-                {
-                case climate::CLIMATE_SWING_OFF:
-                    this->ac_.setSwing(false);
-                    break;
-                case climate::CLIMATE_SWING_VERTICAL:
-                    this->ac_.setSwing(true);
-                    break;
-                default:
-                    this->ac_.setSwing(true);
-                    break;
-                }
+                const bool want_vertical = (this->swing_mode == climate::CLIMATE_SWING_VERTICAL ||
+                                            this->swing_mode == climate::CLIMATE_SWING_BOTH);
+                const bool want_horizontal = (this->swing_mode == climate::CLIMATE_SWING_HORIZONTAL ||
+                                              this->swing_mode == climate::CLIMATE_SWING_BOTH);
+                // Vertical swing is confirmed working on the real unit via the
+                // library's own setSwing(). Horizontal has no library support at
+                // all; poke raw[10] bit 5 directly (reverse-engineered from a
+                // real-remote capture) -- UNVERIFIED on real hardware.
+                this->ac_.setSwing(want_vertical);
+                this->horizontal_swing_ = want_horizontal;
+                uint8_t *raw = this->ac_.getRaw();
+                if (want_horizontal)
+                    raw[10] |= kFujitsuAc264HorizontalSwingBit;
+                else
+                    raw[10] &= ~kFujitsuAc264HorizontalSwingBit;
 
                 // this->ac_.on() is not needed as it is already handled by the following mode switch
                 switch (this->mode)
@@ -368,8 +484,21 @@ namespace esphome
                 {
                     if (this->ac_.getFanSpeed() != prev_fan_speed)
                         this->ac_.setCmd(kFujitsuAc264CmdFanSpeed);
-                    else if (this->ac_.getSwing() != prev_swing)
+                    else if (this->ac_.getSwing() != prev_vertical_swing)
                         this->ac_.setCmd(kFujitsuAc264CmdSwing);
+                    else if (want_horizontal != prev_horizontal_swing)
+                    {
+                        if (want_horizontal)
+                            // Turning it on: same shared Cmd as vertical, matches
+                            // a real-remote "left-right swing ON" capture exactly.
+                            this->ac_.setCmd(kFujitsuAc264CmdSwing);
+                        else
+                            // Turning it off: no capture exists of "off, vague
+                            // position" for this axis, only "off, fixed position"
+                            // -- so send() will finish this by re-sending the last
+                            // remembered horizontal angle via CmdFanAngleHoriz.
+                            this->pending_horizontal_angle_ = true;
+                    }
                 }
             }
 

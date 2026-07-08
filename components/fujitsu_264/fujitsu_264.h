@@ -18,7 +18,8 @@ namespace esphome
             Fujitsu264Climate()
                 : IrRemoteBase(kFujitsuAc264MinTemp, kFujitsuAc264MaxTemp, 0.5f, true, true,
                                {climate::CLIMATE_FAN_AUTO, climate::CLIMATE_FAN_LOW, climate::CLIMATE_FAN_MEDIUM, climate::CLIMATE_FAN_HIGH, climate::CLIMATE_FAN_QUIET},
-                               {climate::CLIMATE_SWING_OFF, climate::CLIMATE_SWING_VERTICAL}) {}
+                               {climate::CLIMATE_SWING_OFF, climate::CLIMATE_SWING_VERTICAL,
+                                climate::CLIMATE_SWING_HORIZONTAL, climate::CLIMATE_SWING_BOTH}) {}
 
             void setup() override;
 
@@ -27,6 +28,22 @@ namespace esphome
             void set_clean(const bool clean);
             void toggle_sterilization();
             void set_weak_dry(const bool weak_dry);
+
+            /// Fixed vertical (up/down) louver position, 1 (up) .. 8 (down).
+            /// Reverse-engineered from a real-remote capture: Fujitsu264Protocol's
+            /// FanAngle field is documented as 1-7, but this unit has 8 positions
+            /// (raw[28]'s low nibble = 0x8 for the lowest one). Sending this stops
+            /// continuous vertical swing, matching the real remote's behavior.
+            void set_vertical_angle(const uint8_t level);
+            uint8_t get_vertical_angle() const { return this->vertical_angle_; }
+
+            /// Fixed horizontal (left/right) louver position, 1 (left) .. 5 (right).
+            /// Has no field in Fujitsu264Protocol at all; reverse-engineered from a
+            /// real-remote capture as raw[10] bit 5 (enable) and raw[28]'s high
+            /// nibble (position). Sending this stops continuous horizontal swing.
+            /// UNVERIFIED on real hardware beyond the byte-level capture.
+            void set_horizontal_angle(const uint8_t level);
+            uint8_t get_horizontal_angle() const { return this->horizontal_angle_; }
 
             /// Temperature adjustment used in auto (heat/cool) mode, -2.0..+2.0 in
             /// 0.5 steps. In auto mode the AC picks the base temperature itself, so
@@ -59,6 +76,22 @@ namespace esphome
             // a mode-change Cmd) from a fan-speed/swing-only change (frame must
             // carry CmdFanSpeed/CmdSwing instead, like the real remote does).
             climate::ClimateMode prev_mode_ = climate::CLIMATE_MODE_OFF;
+
+            // Horizontal swing enable, mirroring the library's own _.Swing
+            // (vertical) flag: the library has no concept of this axis at all, so
+            // we track and poke raw[10] bit 5 ourselves (see .cpp for details).
+            bool horizontal_swing_ = false;
+
+            // Last fixed louver positions, remembered so that turning swing off
+            // (either axis) re-sends a concrete position instead of a vague "stay".
+            uint8_t vertical_angle_ = 1;
+            uint8_t horizontal_angle_ = 1;
+
+            // Set by apply_state() when this cycle turns horizontal swing off with
+            // a fixed angle: send() must patch Cmd/raw[28] and recompute the
+            // checksum itself, since getRaw()'s checkSum() unconditionally forces
+            // raw[28]'s high nibble to 0xF (it assumes that nibble is unused).
+            bool pending_horizontal_angle_ = false;
 
             // Timestamp of our last transmission, so update_from_aeha() can ignore
             // our own signal bouncing back into the IR receiver.
