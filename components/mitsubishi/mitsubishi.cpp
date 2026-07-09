@@ -1,3 +1,8 @@
+#include <algorithm>
+#include <cstring>
+
+#include "esphome/core/helpers.h"
+
 #include "mitsubishi.h"
 
 namespace esphome
@@ -31,6 +36,48 @@ namespace esphome
         const uint32_t kMitsubishi112Gap = kDefaultMessageGap;
 
         static const char *const TAG = "mitsubishi.climate";
+
+        // AEHA-family address the remote uses for its short toggle codes (dry
+        // level cycle / internal clean button), separate from the main
+        // MITSUBISHI_AC state frame. Reverse-engineered from a real-remote
+        // capture; unlike fujitsu_264 this does NOT need bit-reversal (confirmed
+        // by the pre-existing working `aeha:` binary_sensor matcher this
+        // replaces).
+        static const uint16_t kMitsubishiAcCleanToggleAddress = 0xC4D3;
+        // Byte 14 bit 2 of the MITSUBISHI_AC state frame: unused by the library's
+        // own Mitsubishi144Protocol bitfield layout (only bit 5, Ecocool, is
+        // modeled there), reverse-engineered from a real-remote "internal clean"
+        // capture. UNVERIFIED on real hardware beyond the byte-level capture.
+        static const uint8_t kMitsubishiAcCleanBit = 0x04;
+
+        // Dry-mode strength, encoded in byte 8's low nibble (the high nibble is
+        // WideVane, per the library's own layout -- the low nibble is otherwise
+        // unused). Reverse-engineered from a real-remote capture.
+        static uint8_t dry_level_to_nibble(const uint8_t level)
+        {
+            switch (level)
+            {
+            case 0:
+                return 0x4; // weak / "弱"
+            case 2:
+                return 0x0; // strong / "強"
+            default:
+                return 0x2; // normal / "標準"
+            }
+        }
+
+        static uint8_t nibble_to_dry_level(const uint8_t nibble)
+        {
+            switch (nibble)
+            {
+            case 0x4:
+                return 0;
+            case 0x0:
+                return 2;
+            default:
+                return 1;
+            }
+        }
 
         void MitsubishiClimate::set_model(const Model model)
         {
@@ -111,6 +158,22 @@ namespace esphome
             {
             case Model::MITSUBISHI_AC:
                 message = this->ac_.getRaw();
+                // getRaw() above already recomputed the checksum for the fields
+                // the library knows about; poke our own custom bits (unused by
+                // the library's own bitfield layout) and redo it ourselves so
+                // they're covered too. Mirrors fujitsu_264's pending_horizontal_angle_
+                // pattern in its own send().
+                message[8] = (message[8] & 0xF0) | dry_level_to_nibble(this->dry_level_);
+                if (this->clean_)
+                    message[14] |= kMitsubishiAcCleanBit;
+                else
+                    message[14] &= ~kMitsubishiAcCleanBit;
+                {
+                    uint8_t sum = 0;
+                    for (uint8_t i = 0; i < kMitsubishiACStateLength - 1; i++)
+                        sum += message[i];
+                    message[kMitsubishiACStateLength - 1] = sum;
+                }
                 sendGeneric(
                     kMitsubishiAcHdrMark, kMitsubishiAcHdrSpace,
                     kMitsubishiAcBitMark, kMitsubishiAcOneSpace,
@@ -373,6 +436,203 @@ namespace esphome
             }
 
             ESP_LOGI(TAG, "%s", this->ac_112_.toString().c_str());
+        }
+
+        void MitsubishiClimate::set_isee(const bool isee)
+        {
+            // No no-op guard: unlike set_clean()/set_dry_level(), ISee isn't
+            // (yet) read back by update_from_raw(), so there's no receive-sync
+            // feedback loop to break here.
+            this->ac_.setISee(isee);
+            this->send();
+        }
+
+        void MitsubishiClimate::set_clean(const bool clean)
+        {
+            // No-op when unchanged. Breaks the feedback loop where our own
+            // transmission is picked up by the IR receiver, synced back into
+            // this state via update_from_raw()/update_from_aeha(), and would
+            // otherwise be re-transmitted forever (same reason as fujitsu_264's
+            // set_weak_dry()).
+            if (this->clean_ == clean)
+                return;
+            this->clean_ = clean;
+            ESP_LOGI(TAG, "Set clean mode to %s", clean ? "ON" : "OFF");
+            this->send();
+        }
+
+        void MitsubishiClimate::set_dry_level(const uint8_t level)
+        {
+            const uint8_t clamped = std::min<uint8_t>(level, 2);
+            // No-op guard: same reason as set_clean() above.
+            if (this->dry_level_ == clamped)
+                return;
+            this->dry_level_ = clamped;
+            ESP_LOGI(TAG, "Set dry level to %d", clamped);
+            // retransmit only if the change is relevant now
+            if (this->mode == climate::CLIMATE_MODE_DRY)
+            {
+                this->transmit_state();
+            }
+        }
+
+        bool MitsubishiClimate::update_from_raw(const std::vector<int32_t> &pulses)
+        {
+            // Receive sync is only implemented for the 18-byte MITSUBISHI_AC
+            // model, matching the one real unit this was verified against.
+            if (this->model_ != Model::MITSUBISHI_AC)
+                return false;
+
+            if (this->rx_locked_out())
+            {
+                ESP_LOGD(TAG, "Ignoring raw frame received shortly after our own transmission");
+                return false;
+            }
+
+            std::vector<uint8_t> raw;
+            if (!decode_pulses(pulses,
+                                kMitsubishiAcHdrMark, kMitsubishiAcHdrSpace,
+                                kMitsubishiAcBitMark, kMitsubishiAcOneSpace, kMitsubishiAcZeroSpace,
+                                raw))
+                return false;
+
+            if (raw.size() != kMitsubishiACStateLength)
+                return false;
+
+            if (!IRMitsubishiAC::validChecksum(raw.data()))
+            {
+                ESP_LOGW(TAG, "Ignoring raw frame with invalid checksum");
+                return false;
+            }
+
+            this->ac_.setRaw(raw.data());
+
+            if (!this->ac_.getPower())
+            {
+                this->mode = climate::CLIMATE_MODE_OFF;
+            }
+            else
+            {
+                switch (this->ac_.getMode())
+                {
+                case kMitsubishiAcAuto:
+                    this->mode = climate::CLIMATE_MODE_HEAT_COOL;
+                    break;
+                case kMitsubishiAcCool:
+                    this->mode = climate::CLIMATE_MODE_COOL;
+                    break;
+                case kMitsubishiAcHeat:
+                    this->mode = climate::CLIMATE_MODE_HEAT;
+                    break;
+                case kMitsubishiAcDry:
+                    this->mode = climate::CLIMATE_MODE_DRY;
+                    break;
+                case kMitsubishiAcFan:
+                    this->mode = climate::CLIMATE_MODE_FAN_ONLY;
+                    break;
+                default:
+                    ESP_LOGW(TAG, "Unknown mode in received frame: %d", this->ac_.getMode());
+                    return false;
+                }
+
+                this->target_temperature = this->ac_.getTemp();
+
+                // getFan()'s return domain is quirky: setFan() decrements any
+                // value >= kMitsubishiAcFanMax(5) by one before storing (so a
+                // requested "max"/5 is stored as 4, and "silent"/6 as 5), and
+                // getFan() then maps a stored 5 back up to kMitsubishiAcFanSilent
+                // (6) -- so 4, not kMitsubishiAcFanMax, is what a real "high"
+                // selection reads back as. See IRMitsubishiAC::setFan()/getFan().
+                switch (this->ac_.getFan())
+                {
+                case kMitsubishiAcFanAuto:
+                    this->fan_mode = climate::CLIMATE_FAN_AUTO;
+                    break;
+                case 1:
+                    this->fan_mode = climate::CLIMATE_FAN_LOW;
+                    break;
+                case 3:
+                    this->fan_mode = climate::CLIMATE_FAN_MEDIUM;
+                    break;
+                case 4:
+                    this->fan_mode = climate::CLIMATE_FAN_HIGH;
+                    break;
+                case kMitsubishiAcFanSilent:
+                    this->fan_mode = climate::CLIMATE_FAN_QUIET;
+                    break;
+                default:
+                    this->fan_mode = climate::CLIMATE_FAN_AUTO;
+                    break;
+                }
+
+                const bool vertical_on = (this->ac_.getVane() == kMitsubishiAcVaneSwing);
+                const bool horizontal_on = (this->ac_.getWideVane() == kMitsubishiAcWideVaneAuto);
+                if (vertical_on && horizontal_on)
+                    this->swing_mode = climate::CLIMATE_SWING_BOTH;
+                else if (vertical_on)
+                    this->swing_mode = climate::CLIMATE_SWING_VERTICAL;
+                else if (horizontal_on)
+                    this->swing_mode = climate::CLIMATE_SWING_HORIZONTAL;
+                else
+                    this->swing_mode = climate::CLIMATE_SWING_OFF;
+            }
+
+            // Custom bits the library doesn't model at all (see set_dry_level()/
+            // set_clean()); read directly from the decoded frame, not via ac_,
+            // since ac_.getRaw() would re-run checksum() first.
+            this->dry_level_ = nibble_to_dry_level(raw[8] & 0x0F);
+            this->clean_ = (raw[14] & kMitsubishiAcCleanBit) != 0;
+
+            ESP_LOGI(TAG, "Synced state from real remote: %s", this->ac_.toString().c_str());
+            this->publish_state();
+            return true;
+        }
+
+        bool MitsubishiClimate::update_from_aeha(const uint16_t address, const std::vector<uint8_t> &data)
+        {
+            if (address != kMitsubishiAcCleanToggleAddress)
+                return false;
+
+            if (this->rx_locked_out())
+            {
+                ESP_LOGD(TAG, "Ignoring AEHA frame received shortly after our own transmission");
+                return false;
+            }
+
+            // Full dump of every toggle frame from this address, including ones
+            // not decoded below -- capture tool for mapping unknown buttons the
+            // same way fujitsu_264's update_from_aeha() does for its own remote.
+            ESP_LOGD(TAG, "AEHA frame from remote (%u bytes): %s", data.size(),
+                     format_hex_pretty(data.data(), data.size()).c_str());
+
+            if (data.size() < 16)
+                return false;
+
+            // Dry level toggle: data[6]/data[7] identify which level the remote
+            // just cycled to. Reverse-engineered from a real-remote capture.
+            if (data[3] == 0x04)
+            {
+                if (data[6] == 0x2C && data[7] == 0x02)
+                    this->dry_level_ = 0; // weak / "弱"
+                else if (data[6] == 0x4C && data[7] == 0x01)
+                    this->dry_level_ = 1; // normal / "標準"
+                else if (data[6] == 0x0C && data[7] == 0x02)
+                    this->dry_level_ = 2; // strong / "強"
+                else
+                    return false;
+                this->publish_state();
+                return true;
+            }
+
+            // Internal clean button press.
+            if (data[3] == 0x00 && data[6] == 0x2C)
+            {
+                this->clean_ = true;
+                this->publish_state();
+                return true;
+            }
+
+            return false;
         }
 
     } // namespace mitsubishi
