@@ -79,6 +79,28 @@ namespace esphome
             }
         }
 
+        climate::ClimateTraits MitsubishiClimate::traits()
+        {
+            auto traits = climate_ir::ClimateIR::traits();
+
+            auto modes = traits.get_supported_modes();
+            if (this->supports_auto_override_.has_value() && !*this->supports_auto_override_)
+                modes.erase(climate::CLIMATE_MODE_HEAT_COOL);
+            if (this->supports_fan_only_override_.has_value() && !*this->supports_fan_only_override_)
+                modes.erase(climate::CLIMATE_MODE_FAN_ONLY);
+            traits.set_supported_modes(modes);
+
+            if (this->horizontal_swing_override_.has_value() && !*this->horizontal_swing_override_)
+            {
+                auto swings = traits.get_supported_swing_modes();
+                swings.erase(climate::CLIMATE_SWING_HORIZONTAL);
+                swings.erase(climate::CLIMATE_SWING_BOTH);
+                traits.set_supported_swing_modes(swings);
+            }
+
+            return traits;
+        }
+
         void MitsubishiClimate::set_model(const Model model)
         {
             this->model_ = model;
@@ -256,7 +278,13 @@ namespace esphome
 
                 if (this->fan_mode.has_value())
                 {
-                    // 0 is auto, 1-5 is speed, 6 is silent.
+                    // This unit's own remote uses raw fan speeds 1/2/3 directly
+                    // for its three labeled low/medium/high buttons (confirmed
+                    // against a real-remote capture: update_from_raw() decoded
+                    // them as exactly 1/2/3, not the every-other-value scheme
+                    // some other units in this family use). 0 is auto, 6 is
+                    // silent (stored internally as 5 by setFan(), see getFan()'s
+                    // own quirks noted in update_from_raw() below).
                     switch (this->fan_mode.value())
                     {
                     case climate::CLIMATE_FAN_AUTO:
@@ -269,10 +297,10 @@ namespace esphome
                         this->ac_.setFan(1);
                         break;
                     case climate::CLIMATE_FAN_MEDIUM:
-                        this->ac_.setFan(3);
+                        this->ac_.setFan(2);
                         break;
                     case climate::CLIMATE_FAN_HIGH:
-                        this->ac_.setFan(kMitsubishiAcFanMax);
+                        this->ac_.setFan(3);
                         break;
                     }
                 }
@@ -464,16 +492,22 @@ namespace esphome
         void MitsubishiClimate::set_dry_level(const uint8_t level)
         {
             const uint8_t clamped = std::min<uint8_t>(level, 2);
-            // No-op guard: same reason as set_clean() above.
-            if (this->dry_level_ == clamped)
+            // Selecting a dry level also switches the unit into dry mode (same
+            // as fujitsu_264's set_weak_dry()), so the select is directly usable
+            // from any other mode. No-op only when nothing would actually
+            // change (same value and already in dry mode) -- same feedback-loop
+            // reason as set_clean() above.
+            const bool already_dry = (this->mode == climate::CLIMATE_MODE_DRY);
+            if (this->dry_level_ == clamped && already_dry)
                 return;
             this->dry_level_ = clamped;
             ESP_LOGI(TAG, "Set dry level to %d", clamped);
-            // retransmit only if the change is relevant now
-            if (this->mode == climate::CLIMATE_MODE_DRY)
+            if (!already_dry)
             {
-                this->transmit_state();
+                this->mode = climate::CLIMATE_MODE_DRY;
+                this->publish_state();
             }
+            this->transmit_state();
         }
 
         bool MitsubishiClimate::update_from_raw(const std::vector<int32_t> &pulses)
@@ -537,12 +571,13 @@ namespace esphome
 
                 this->target_temperature = this->ac_.getTemp();
 
-                // getFan()'s return domain is quirky: setFan() decrements any
-                // value >= kMitsubishiAcFanMax(5) by one before storing (so a
-                // requested "max"/5 is stored as 4, and "silent"/6 as 5), and
-                // getFan() then maps a stored 5 back up to kMitsubishiAcFanSilent
-                // (6) -- so 4, not kMitsubishiAcFanMax, is what a real "high"
-                // selection reads back as. See IRMitsubishiAC::setFan()/getFan().
+                // This unit's remote uses raw fan speeds 1/2/3 directly for its
+                // three labeled low/medium/high buttons (confirmed against a
+                // real-remote capture), matching what apply_state_ac() now
+                // sends. getFan() returns kMitsubishiAcFanSilent(6) instead of
+                // kMitsubishiAcFanMax(5) for "silent", since setFan() stores it
+                // decremented and getFan() maps that stored value back up --
+                // see IRMitsubishiAC::setFan()/getFan().
                 switch (this->ac_.getFan())
                 {
                 case kMitsubishiAcFanAuto:
@@ -551,10 +586,10 @@ namespace esphome
                 case 1:
                     this->fan_mode = climate::CLIMATE_FAN_LOW;
                     break;
-                case 3:
+                case 2:
                     this->fan_mode = climate::CLIMATE_FAN_MEDIUM;
                     break;
-                case 4:
+                case 3:
                     this->fan_mode = climate::CLIMATE_FAN_HIGH;
                     break;
                 case kMitsubishiAcFanSilent:

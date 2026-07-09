@@ -5,6 +5,7 @@
 #include "esphome/core/log.h"
 #include "esphome/core/component.h"
 #include "esphome/core/automation.h"
+#include "esphome/core/optional.h"
 #include "esphome/components/ir_remote_base/ir_remote_base.h"
 #include "ir_Mitsubishi.h"
 
@@ -71,8 +72,19 @@ namespace esphome
             /// replaces). Returns true if state was updated.
             bool update_from_aeha(const uint16_t address, const std::vector<uint8_t> &data);
 
+            /// Restrict the exposed climate modes/swing modes below what the
+            /// library/model otherwise supports, for units that don't have a
+            /// given feature at all (e.g. no auto/fan-only mode, no horizontal
+            /// swing). Unset (the default) means "use the library/model
+            /// default" -- these only ever narrow, never widen, what
+            /// Model::MITSUBISHI_AC etc. already expose.
+            void set_supports_auto(bool supports) { this->supports_auto_override_ = supports; }
+            void set_supports_fan_only(bool supports) { this->supports_fan_only_override_ = supports; }
+            void set_horizontal_swing_supported(bool supported) { this->horizontal_swing_override_ = supported; }
+
         protected:
             void transmit_state() override;
+            climate::ClimateTraits traits() override;
 
         private:
             void send();
@@ -88,6 +100,10 @@ namespace esphome
 
             bool clean_ = false;
             uint8_t dry_level_ = 1;
+
+            optional<bool> supports_auto_override_;
+            optional<bool> supports_fan_only_override_;
+            optional<bool> horizontal_swing_override_;
         };
 
     } // namespace mitsubishi

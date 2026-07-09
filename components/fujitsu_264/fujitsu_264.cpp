@@ -171,18 +171,24 @@ namespace esphome
 
         void Fujitsu264Climate::set_weak_dry(const bool weak_dry)
         {
-            // No-op when unchanged. This also breaks the feedback loop where our
-            // own transmission is picked up by the IR receiver, synced back into
-            // the dry-mode select, and would otherwise be re-transmitted forever.
-            if (this->weak_dry_ == weak_dry)
+            // Selecting a dry strength also switches the unit into dry mode, so
+            // the select is directly usable from any other mode (e.g. cooling)
+            // instead of silently doing nothing. No-op only when nothing would
+            // actually change (same value and already in dry mode) -- that also
+            // breaks the feedback loop where our own transmission is picked up
+            // by the IR receiver, synced back into the dry-mode select, and
+            // would otherwise be re-transmitted forever.
+            const bool already_dry = (this->mode == climate::CLIMATE_MODE_DRY);
+            if (this->weak_dry_ == weak_dry && already_dry)
                 return;
             this->weak_dry_ = weak_dry;
             ESP_LOGI(TAG, "Set weak dry to %s", weak_dry ? "ON" : "OFF");
-            // retransmit only if the change is relevant now
-            if (this->mode == climate::CLIMATE_MODE_DRY)
+            if (!already_dry)
             {
-                this->transmit_state();
+                this->mode = climate::CLIMATE_MODE_DRY;
+                this->publish_state();
             }
+            this->transmit_state();
         }
 
         void Fujitsu264Climate::set_temp_auto_offset(const float offset)
