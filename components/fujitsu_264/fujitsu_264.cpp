@@ -171,15 +171,18 @@ namespace esphome
 
         void Fujitsu264Climate::set_weak_dry(const bool weak_dry)
         {
-            // Selecting a dry strength also switches the unit into dry mode, so
-            // the select is directly usable from any other mode (e.g. cooling)
-            // instead of silently doing nothing. No-op only when nothing would
-            // actually change (same value and already in dry mode) -- that also
-            // breaks the feedback loop where our own transmission is picked up
-            // by the IR receiver, synced back into the dry-mode select, and
-            // would otherwise be re-transmitted forever.
+            // No-op guard: value-only. Re-selecting an already-stored value
+            // from outside dry mode won't itself switch into dry mode; pick a
+            // different value, or use the mode control, for that (same
+            // tradeoff as set_vertical_angle()'s guard). Required, not just
+            // an accepted limitation: the select's on_value always re-fires
+            // when update_from_aeha() republishes it after every successful
+            // sync -- including ones where the real remote changed to a
+            // *different* mode entirely. A mode-aware guard
+            // (weak_dry_==weak_dry && already_dry) let that echo fall
+            // through and force the just-synced mode back to DRY.
             const bool already_dry = (this->mode == climate::CLIMATE_MODE_DRY);
-            if (this->weak_dry_ == weak_dry && already_dry)
+            if (this->weak_dry_ == weak_dry)
                 return;
             this->weak_dry_ = weak_dry;
             ESP_LOGI(TAG, "Set weak dry to %s", weak_dry ? "ON" : "OFF");

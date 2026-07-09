@@ -537,13 +537,18 @@ namespace esphome
         void MitsubishiClimate::set_dry_level(const uint8_t level)
         {
             const uint8_t clamped = std::min<uint8_t>(level, 2);
-            // Selecting a dry level also switches the unit into dry mode (same
-            // as fujitsu_264's set_weak_dry()), so the select is directly usable
-            // from any other mode. No-op only when nothing would actually
-            // change (same value and already in dry mode) -- same feedback-loop
-            // reason as set_clean() above.
+            // No-op guard: value-only, same tradeoff as set_vertical_vane()'s
+            // guard (see its comment) -- re-selecting an already-stored value
+            // from outside dry mode won't itself switch into dry mode; pick a
+            // different value, or use the mode control, for that. Required,
+            // not just an accepted limitation: select::publish_state() always
+            // re-fires on_value, and the sync handlers republish this select
+            // on every successful update_from_raw()/update_from_aeha() --
+            // including ones where the real remote changed to a *different*
+            // mode entirely. A mode-aware guard let that echo fall through
+            // and force the just-synced mode back to DRY.
             const bool already_dry = (this->mode == climate::CLIMATE_MODE_DRY);
-            if (this->dry_level_ == clamped && already_dry)
+            if (this->dry_level_ == clamped)
                 return;
             this->dry_level_ = clamped;
             ESP_LOGI(TAG, "Set dry level to %d", clamped);
