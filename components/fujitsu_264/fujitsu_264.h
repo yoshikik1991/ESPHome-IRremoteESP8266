@@ -106,10 +106,6 @@ namespace esphome
             // checksum itself, since getRaw()'s checkSum() unconditionally forces
             // raw[28]'s high nibble to 0xF (it assumes that nibble is unused).
             bool pending_horizontal_angle_ = false;
-
-            // Timestamp of our last transmission, so update_from_aeha() can ignore
-            // our own signal bouncing back into the IR receiver.
-            uint32_t last_tx_ms_ = 0;
         };
     } // namespace fujitsu_264
 } // namespace esphome

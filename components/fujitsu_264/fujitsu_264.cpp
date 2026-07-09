@@ -20,9 +20,6 @@ namespace esphome
         // Fixed Fujitsu264 manufacturer header, as sent over the wire as the AEHA
         // "address" field (little-endian): raw[0]=0x14, raw[1]=0x63.
         static const uint16_t kFujitsuAc264Address = 0x6314;
-        // Ignore AEHA frames received within this long of our own transmission,
-        // since the IR receiver picks up our own LED's reflection/crosstalk.
-        static const uint32_t kRxLockoutMs = 500;
 
         // Undocumented Cmd for setting the horizontal (left/right) louver angle,
         // the sibling of the library's own kFujitsuAc264CmdFanAngle (0x22, which
@@ -41,24 +38,8 @@ namespace esphome
         // matched byte-for-byte). So every value it hands us is bit-reversed
         // relative to the wire/raw[] representation and needs to be un-reversed:
         // the 16-bit address as a whole, and each data byte independently.
-        static uint16_t reverse_bits16(uint16_t v)
-        {
-            uint16_t r = 0;
-            for (int i = 0; i < 16; i++)
-            {
-                r = (r << 1) | (v & 1);
-                v >>= 1;
-            }
-            return r;
-        }
-
-        static uint8_t reverse_bits8(uint8_t v)
-        {
-            v = ((v & 0xF0) >> 4) | ((v & 0x0F) << 4);
-            v = ((v & 0xCC) >> 2) | ((v & 0x33) << 2);
-            v = ((v & 0xAA) >> 1) | ((v & 0x55) << 1);
-            return v;
-        }
+        // (reverse_bits8/16 now live on IrRemoteBase, shared with every other
+        // component on this fork whose receive-sync entry point is on_aeha.)
 
         void Fujitsu264Climate::setup()
         {
@@ -259,7 +240,6 @@ namespace esphome
                 message, length,
                 38000
             );
-            this->last_tx_ms_ = millis();
         }
 
         bool Fujitsu264Climate::update_from_aeha(const uint16_t raw_address, const std::vector<uint8_t> &raw_data)
@@ -268,7 +248,7 @@ namespace esphome
             if (address != kFujitsuAc264Address)
                 return false;
 
-            if (millis() - this->last_tx_ms_ < kRxLockoutMs)
+            if (this->rx_locked_out())
             {
                 ESP_LOGD(TAG, "Ignoring AEHA frame received shortly after our own transmission");
                 return false;
