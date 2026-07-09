@@ -68,6 +68,18 @@ namespace esphome
             void set_vertical_vane(const uint8_t position);
             uint8_t get_vertical_vane() const { return this->vertical_vane_; }
 
+            /// Powerful (boost) mode. Not exposed by IRMitsubishiAC at all --
+            /// byte 15 bit 4 is reverse-engineered from a real-remote capture
+            /// (a gap between the library's own DirectIndirect/AbsenseDetect
+            /// and iSave10C fields in that byte). Unlike fujitsu_264's
+            /// toggle_powerful() (a stateless toggle command), this unit's
+            /// remote sends it as a persistent flag within the normal state
+            /// frame -- confirmed via two real captures (ON/OFF) that differed
+            /// in only this bit -- so it's a plain set/get, and (like
+            /// set_dry_level()/set_vertical_vane()) transmits immediately.
+            void set_powerful(const bool powerful);
+            bool get_powerful() const { return this->powerful_; }
+
             /// Sync state from a frame captured by ESPHome's built-in on_raw
             /// pulse dump (this protocol has no ESPHome built-in decoder, unlike
             /// fujitsu_264's on_aeha). Only implemented for Model::MITSUBISHI_AC.
@@ -114,6 +126,7 @@ namespace esphome
             bool clean_ = false;
             uint8_t dry_level_ = 1;
             uint8_t vertical_vane_ = 0;
+            bool powerful_ = false;
 
             optional<bool> supports_auto_override_;
             optional<bool> supports_fan_only_override_;

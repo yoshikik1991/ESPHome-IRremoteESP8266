@@ -50,6 +50,12 @@ namespace esphome
         // capture. UNVERIFIED on real hardware beyond the byte-level capture.
         static const uint8_t kMitsubishiAcCleanBit = 0x04;
 
+        // Byte 15 bit 4: a gap between the library's own DirectIndirect (bits
+        // 0-1), AbsenseDetect (bit 2) and iSave10C (bit 5) fields in that
+        // byte. Confirmed via two real captures (Powerful ON vs OFF) that
+        // differed in only this bit.
+        static const uint8_t kMitsubishiAcPowerfulBit = 0x10;
+
         // Dry-mode strength, encoded in byte 8's low nibble (the high nibble is
         // WideVane, per the library's own layout -- the low nibble is otherwise
         // unused). Reverse-engineered from a real-remote capture.
@@ -217,6 +223,10 @@ namespace esphome
                     message[14] |= kMitsubishiAcCleanBit;
                 else
                     message[14] &= ~kMitsubishiAcCleanBit;
+                if (this->powerful_)
+                    message[15] |= kMitsubishiAcPowerfulBit;
+                else
+                    message[15] &= ~kMitsubishiAcPowerfulBit;
                 {
                     uint8_t sum = 0;
                     for (uint8_t i = 0; i < kMitsubishiACStateLength - 1; i++)
@@ -579,6 +589,17 @@ namespace esphome
             this->transmit_state();
         }
 
+        void MitsubishiClimate::set_powerful(const bool powerful)
+        {
+            // No-op guard: same reason as set_dry_level()/set_vertical_vane()
+            // above (breaks the receive-sync feedback loop).
+            if (this->powerful_ == powerful)
+                return;
+            this->powerful_ = powerful;
+            ESP_LOGI(TAG, "Set powerful mode to %s", powerful ? "ON" : "OFF");
+            this->transmit_state();
+        }
+
         bool MitsubishiClimate::update_from_raw(const std::vector<int32_t> &pulses)
         {
             // Receive sync is only implemented for the 18-byte MITSUBISHI_AC
@@ -702,6 +723,7 @@ namespace esphome
             // since ac_.getRaw() would re-run checksum() first.
             this->dry_level_ = nibble_to_dry_level(raw[8] & 0x0F);
             this->clean_ = (raw[14] & kMitsubishiAcCleanBit) != 0;
+            this->powerful_ = (raw[15] & kMitsubishiAcPowerfulBit) != 0;
 
             ESP_LOGI(TAG, "Synced state from real remote: %s", this->ac_.toString().c_str());
             this->publish_state();
