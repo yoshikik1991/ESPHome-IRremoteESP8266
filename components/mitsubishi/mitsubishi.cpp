@@ -308,7 +308,10 @@ namespace esphome
                 switch (this->swing_mode)
                 {
                 case climate::CLIMATE_SWING_OFF:
-                    this->ac_.setVane(kMitsubishiAcVaneMiddle);
+                    // Fixed position remembered from set_vertical_vane() (auto
+                    // by default), not always Middle -- lets a user-selected
+                    // vane position survive independently of swing on/off.
+                    this->ac_.setVane(this->vertical_vane_);
                     this->ac_.setWideVane(kMitsubishiAcWideVaneMiddle);
                     break;
                 case climate::CLIMATE_SWING_VERTICAL:
@@ -316,7 +319,7 @@ namespace esphome
                     this->ac_.setWideVane(kMitsubishiAcWideVaneMiddle);
                     break;
                 case climate::CLIMATE_SWING_HORIZONTAL:
-                    this->ac_.setVane(kMitsubishiAcVaneMiddle);
+                    this->ac_.setVane(this->vertical_vane_);
                     this->ac_.setWideVane(kMitsubishiAcWideVaneAuto);
                     break;
                 case climate::CLIMATE_SWING_BOTH:
@@ -510,6 +513,31 @@ namespace esphome
             this->transmit_state();
         }
 
+        void MitsubishiClimate::set_vertical_vane(const uint8_t position)
+        {
+            // kMitsubishiAcVaneAuto/Highest/High/Middle/Low/Lowest are exactly
+            // 0..5 in that order, so the clamped position doubles as the raw
+            // library value directly.
+            const uint8_t clamped = std::min<uint8_t>(position, kMitsubishiAcVaneLowest);
+            const bool was_vertical_swing = (this->swing_mode == climate::CLIMATE_SWING_VERTICAL ||
+                                              this->swing_mode == climate::CLIMATE_SWING_BOTH);
+            // No-op guard: same feedback-loop reason as set_clean()/set_dry_level().
+            if (this->vertical_vane_ == clamped && !was_vertical_swing)
+                return;
+            this->vertical_vane_ = clamped;
+
+            // Selecting a position (including auto) stops continuous vertical
+            // swing, matching fujitsu_264's set_vertical_angle().
+            if (this->swing_mode == climate::CLIMATE_SWING_VERTICAL)
+                this->swing_mode = climate::CLIMATE_SWING_OFF;
+            else if (this->swing_mode == climate::CLIMATE_SWING_BOTH)
+                this->swing_mode = climate::CLIMATE_SWING_HORIZONTAL;
+
+            ESP_LOGI(TAG, "Set vertical vane to %d", clamped);
+            this->publish_state();
+            this->transmit_state();
+        }
+
         bool MitsubishiClimate::update_from_raw(const std::vector<int32_t> &pulses)
         {
             // Receive sync is only implemented for the 18-byte MITSUBISHI_AC
@@ -600,7 +628,8 @@ namespace esphome
                     break;
                 }
 
-                const bool vertical_on = (this->ac_.getVane() == kMitsubishiAcVaneSwing);
+                const uint8_t vane = this->ac_.getVane();
+                const bool vertical_on = (vane == kMitsubishiAcVaneSwing);
                 const bool horizontal_on = (this->ac_.getWideVane() == kMitsubishiAcWideVaneAuto);
                 if (vertical_on && horizontal_on)
                     this->swing_mode = climate::CLIMATE_SWING_BOTH;
@@ -610,6 +639,11 @@ namespace esphome
                     this->swing_mode = climate::CLIMATE_SWING_HORIZONTAL;
                 else
                     this->swing_mode = climate::CLIMATE_SWING_OFF;
+
+                // Only remember an actual fixed position (including auto),
+                // not "swing", same reasoning as fujitsu_264's angle sync.
+                if (!vertical_on)
+                    this->vertical_vane_ = vane;
             }
 
             // Custom bits the library doesn't model at all (see set_dry_level()/

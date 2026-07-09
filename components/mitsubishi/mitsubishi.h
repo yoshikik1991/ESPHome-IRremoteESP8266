@@ -57,6 +57,17 @@ namespace esphome
             void set_dry_level(const uint8_t level);
             uint8_t get_dry_level() const { return this->dry_level_; }
 
+            /// Fixed vertical louver position, using IRMitsubishiAC's own native
+            /// Vane field (fully supported by the library, unlike fujitsu_264's
+            /// angle fields): 0 (auto) .. 5 (lowest fixed position), matching
+            /// kMitsubishiAcVaneAuto/Highest/High/Middle/Low/Lowest. Selecting a
+            /// position (including auto) stops continuous vertical swing --
+            /// swing on/off itself is still controlled by the climate's own
+            /// swing_mode, same split as fujitsu_264's set_vertical_angle()/
+            /// swing_mode.
+            void set_vertical_vane(const uint8_t position);
+            uint8_t get_vertical_vane() const { return this->vertical_vane_; }
+
             /// Sync state from a frame captured by ESPHome's built-in on_raw
             /// pulse dump (this protocol has no ESPHome built-in decoder, unlike
             /// fujitsu_264's on_aeha). Only implemented for Model::MITSUBISHI_AC.
@@ -100,6 +111,7 @@ namespace esphome
 
             bool clean_ = false;
             uint8_t dry_level_ = 1;
+            uint8_t vertical_vane_ = 0;
 
             optional<bool> supports_auto_override_;
             optional<bool> supports_fan_only_override_;
