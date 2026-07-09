@@ -597,7 +597,17 @@ namespace esphome
                                 kMitsubishiAcHdrMark, kMitsubishiAcHdrSpace,
                                 kMitsubishiAcBitMark, kMitsubishiAcOneSpace, kMitsubishiAcZeroSpace,
                                 raw))
+            {
+                ESP_LOGD(TAG, "Raw frame (%u pulses) did not match MITSUBISHI_AC timing", pulses.size());
                 return false;
+            }
+
+            // Full dump of every frame matching this timing family, including
+            // ones with an unexpected length or invalid checksum -- capture
+            // tool for mapping unknown buttons (e.g. Powerful), same as
+            // update_from_aeha()'s own dump below.
+            ESP_LOGD(TAG, "Raw frame (%u bytes): %s", raw.size(),
+                     format_hex_pretty(raw.data(), raw.size()).c_str());
 
             if (raw.size() != kMitsubishiACStateLength)
                 return false;
@@ -700,20 +710,21 @@ namespace esphome
 
         bool MitsubishiClimate::update_from_aeha(const uint16_t address, const std::vector<uint8_t> &data)
         {
-            if (address != kMitsubishiAcCleanToggleAddress)
-                return false;
-
             if (this->rx_locked_out())
             {
                 ESP_LOGD(TAG, "Ignoring AEHA frame received shortly after our own transmission");
                 return false;
             }
 
-            // Full dump of every toggle frame from this address, including ones
-            // not decoded below -- capture tool for mapping unknown buttons the
-            // same way fujitsu_264's update_from_aeha() does for its own remote.
-            ESP_LOGD(TAG, "AEHA frame from remote (%u bytes): %s", data.size(),
+            // Full dump of every AEHA-family frame from this remote, including
+            // ones from addresses we don't recognize at all yet -- capture
+            // tool for mapping unknown buttons (e.g. Powerful), same as
+            // fujitsu_264's own update_from_aeha().
+            ESP_LOGD(TAG, "AEHA frame (address 0x%04X, %u bytes): %s", address, data.size(),
                      format_hex_pretty(data.data(), data.size()).c_str());
+
+            if (address != kMitsubishiAcCleanToggleAddress)
+                return false;
 
             if (data.size() < 16)
                 return false;
