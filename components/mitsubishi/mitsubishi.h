@@ -92,8 +92,10 @@ namespace esphome
             void set_supports_auto(bool supports) { this->supports_auto_override_ = supports; }
             void set_supports_fan_only(bool supports) { this->supports_fan_only_override_ = supports; }
             void set_horizontal_swing_supported(bool supported) { this->horizontal_swing_override_ = supported; }
+            void set_supports_quiet_fan(bool supports) { this->supports_quiet_fan_override_ = supports; }
 
         protected:
+            void control(const climate::ClimateCall &call) override;
             void transmit_state() override;
             climate::ClimateTraits traits() override;
 
@@ -116,6 +118,7 @@ namespace esphome
             optional<bool> supports_auto_override_;
             optional<bool> supports_fan_only_override_;
             optional<bool> horizontal_swing_override_;
+            optional<bool> supports_quiet_fan_override_;
         };
 
     } // namespace mitsubishi

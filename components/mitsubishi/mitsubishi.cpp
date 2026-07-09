@@ -98,7 +98,34 @@ namespace esphome
                 traits.set_supported_swing_modes(swings);
             }
 
+            if (this->supports_quiet_fan_override_.has_value() && !*this->supports_quiet_fan_override_)
+            {
+                auto fan_modes = traits.get_supported_fan_modes();
+                fan_modes.erase(climate::CLIMATE_FAN_QUIET);
+                traits.set_supported_fan_modes(fan_modes);
+            }
+
             return traits;
+        }
+
+        void MitsubishiClimate::control(const climate::ClimateCall &call)
+        {
+            if (call.get_swing_mode().has_value())
+            {
+                const bool was_vertical = (this->swing_mode == climate::CLIMATE_SWING_VERTICAL ||
+                                            this->swing_mode == climate::CLIMATE_SWING_BOTH);
+                const auto new_swing = *call.get_swing_mode();
+                const bool will_be_vertical = (new_swing == climate::CLIMATE_SWING_VERTICAL ||
+                                                new_swing == climate::CLIMATE_SWING_BOTH);
+                // Turning vertical swing off via the climate's own swing
+                // control (as opposed to set_vertical_vane() picking a fixed
+                // position, which manages swing_mode itself) resets the
+                // remembered vane position back to auto, rather than silently
+                // keeping whatever fixed position was last selected.
+                if (was_vertical && !will_be_vertical)
+                    this->vertical_vane_ = kMitsubishiAcVaneAuto;
+            }
+            climate_ir::ClimateIR::control(call);
         }
 
         void MitsubishiClimate::set_model(const Model model)
@@ -489,7 +516,12 @@ namespace esphome
                 return;
             this->clean_ = clean;
             ESP_LOGI(TAG, "Set clean mode to %s", clean ? "ON" : "OFF");
-            this->send();
+            // Deliberately no send() here: confirmed on real hardware that the
+            // flag just needs to ride along on whatever frame is next
+            // transmitted for another reason (e.g. turning the unit off) --
+            // send() already bakes in the current clean_ value regardless of
+            // why it's called, and toggling this on its own shouldn't cause
+            // its own IR transmission.
         }
 
         void MitsubishiClimate::set_dry_level(const uint8_t level)
