@@ -766,8 +766,17 @@ namespace esphome
 
             // Dry level toggle: data[6]/data[7] identify which level the remote
             // just cycled to. Reverse-engineered from a real-remote capture.
+            // Confirmed on real hardware that this side-channel frame keeps
+            // arriving with the same kind of dry-level-position payload even
+            // while in other modes (e.g. Heat) -- same "only means anything
+            // in dry mode" restriction as the main state frame's byte 8 low
+            // nibble in update_from_raw(), otherwise it clobbers the
+            // remembered dry level with noise every time it's rebroadcast.
             if (data[3] == 0x04)
             {
+                if (this->mode != climate::CLIMATE_MODE_DRY)
+                    return false;
+
                 if (data[6] == 0x2C && data[7] == 0x02)
                     this->dry_level_ = 0; // weak / "弱"
                 else if (data[6] == 0x4C && data[7] == 0x01)
