@@ -726,7 +726,15 @@ namespace esphome
             // Custom bits the library doesn't model at all (see set_dry_level()/
             // set_clean()); read directly from the decoded frame, not via ac_,
             // since ac_.getRaw() would re-run checksum() first.
-            this->dry_level_ = nibble_to_dry_level(raw[8] & 0x0F);
+            //
+            // Byte 8's low nibble only actually carries dry level while in
+            // dry mode -- confirmed on real hardware that in other modes it
+            // holds some other, mode-correlated value (e.g. reads as "weak"
+            // in Cool, "strong" in Heat), not dry level at all. Only sync it
+            // while the frame's own mode is DRY, so switching to another
+            // mode doesn't clobber the remembered dry level with noise.
+            if (this->mode == climate::CLIMATE_MODE_DRY)
+                this->dry_level_ = nibble_to_dry_level(raw[8] & 0x0F);
             this->clean_ = (raw[14] & kMitsubishiAcCleanBit) != 0;
             this->powerful_ = (raw[15] & kMitsubishiAcPowerfulBit) != 0;
 
