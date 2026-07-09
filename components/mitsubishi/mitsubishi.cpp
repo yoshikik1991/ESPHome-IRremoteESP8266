@@ -551,10 +551,19 @@ namespace esphome
             // 0..5 in that order, so the clamped position doubles as the raw
             // library value directly.
             const uint8_t clamped = std::min<uint8_t>(position, kMitsubishiAcVaneLowest);
-            const bool was_vertical_swing = (this->swing_mode == climate::CLIMATE_SWING_VERTICAL ||
-                                              this->swing_mode == climate::CLIMATE_SWING_BOTH);
-            // No-op guard: same feedback-loop reason as set_clean()/set_dry_level().
-            if (this->vertical_vane_ == clamped && !was_vertical_swing)
+            // No-op guard: value-only, matching fujitsu_264's
+            // set_vertical_angle() exactly. This is required (not just an
+            // optimization): select::publish_state() -- unlike switch's --
+            // always re-fires on_value, so the on_state trigger that keeps
+            // "上下角度" in sync after any climate change (including turning
+            // swing on) echoes straight back into this method with the
+            // unchanged value. A stricter guard that also allowed re-applying
+            // a same-value pick while swinging (to force a stop) would let
+            // that echo fall through and immediately cancel swing right after
+            // it was turned on. Accepted tradeoff (same as fujitsu_264):
+            // re-selecting an already-remembered position while swing is on
+            // does NOT stop it -- use the swing control for that instead.
+            if (this->vertical_vane_ == clamped)
                 return;
             this->vertical_vane_ = clamped;
 
