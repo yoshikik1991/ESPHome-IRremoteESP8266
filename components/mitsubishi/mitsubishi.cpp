@@ -56,6 +56,16 @@ namespace esphome
         // differed in only this bit.
         static const uint8_t kMitsubishiAcPowerfulBit = 0x10;
 
+        // Byte 6 bit 2: the mode byte's low 3 bits are unused by the library's
+        // own bitfield layout (Mode is bits 3-5, ISee bit 6). Confirmed via
+        // real captures of the remote's 電流切換 (current limit) button: the
+        // Heat-mode 通常->小 press changed only this bit (byte 6 0x08 -> 0x0C,
+        // plus checksum), and the same bit tracked the setting in Cool
+        // (0x18 -> 0x1C). The remote's short AEHA side-channel frame mirrors
+        // it too (data[4] bit 5), but the main state frame always accompanies
+        // it, so only this bit is used for both send and receive sync.
+        static const uint8_t kMitsubishiAcCurrentCutBit = 0x04;
+
         // Dry-mode strength, encoded in byte 8's low nibble (the high nibble is
         // WideVane, per the library's own layout -- the low nibble is otherwise
         // unused). Reverse-engineered from a real-remote capture.
@@ -227,6 +237,10 @@ namespace esphome
                     message[15] |= kMitsubishiAcPowerfulBit;
                 else
                     message[15] &= ~kMitsubishiAcPowerfulBit;
+                if (this->current_cut_)
+                    message[6] |= kMitsubishiAcCurrentCutBit;
+                else
+                    message[6] &= ~kMitsubishiAcCurrentCutBit;
                 {
                     uint8_t sum = 0;
                     for (uint8_t i = 0; i < kMitsubishiACStateLength - 1; i++)
@@ -605,6 +619,17 @@ namespace esphome
             this->transmit_state();
         }
 
+        void MitsubishiClimate::set_current_cut(const bool current_cut)
+        {
+            // No-op guard: same reason as set_dry_level()/set_vertical_vane()
+            // above (breaks the receive-sync feedback loop).
+            if (this->current_cut_ == current_cut)
+                return;
+            this->current_cut_ = current_cut;
+            ESP_LOGI(TAG, "Set current cut to %s", current_cut ? "ON (小)" : "OFF (通常)");
+            this->transmit_state();
+        }
+
         bool MitsubishiClimate::update_from_raw(const std::vector<int32_t> &pulses)
         {
             // Receive sync is only implemented for the 18-byte MITSUBISHI_AC
@@ -737,6 +762,7 @@ namespace esphome
                 this->dry_level_ = nibble_to_dry_level(raw[8] & 0x0F);
             this->clean_ = (raw[14] & kMitsubishiAcCleanBit) != 0;
             this->powerful_ = (raw[15] & kMitsubishiAcPowerfulBit) != 0;
+            this->current_cut_ = (raw[6] & kMitsubishiAcCurrentCutBit) != 0;
 
             ESP_LOGI(TAG, "Synced state from real remote: %s", this->ac_.toString().c_str());
             this->publish_state();

@@ -80,6 +80,20 @@ namespace esphome
             void set_powerful(const bool powerful);
             bool get_powerful() const { return this->powerful_; }
 
+            /// Current-limit ("電流切換") mode: true = limited ("小", caps the
+            /// max operating current for households with a weak breaker),
+            /// false = normal ("通常"). Not exposed by IRMitsubishiAC at all --
+            /// byte 6 bit 2 (in the mode byte's unused low 3 bits) is
+            /// reverse-engineered from real-remote captures: pressing the
+            /// remote's 電流切換 button in Heat changed only this bit
+            /// (0x08 -> 0x0C), and the same bit tracked the setting in Cool
+            /// (0x18 -> 0x1C). Like set_powerful() it's a persistent flag
+            /// within the normal state frame (the remote's LCD shows the
+            /// setting permanently), not a stateless toggle code, so it's a
+            /// plain set/get that transmits immediately.
+            void set_current_cut(const bool current_cut);
+            bool get_current_cut() const { return this->current_cut_; }
+
             /// Sync state from a frame captured by ESPHome's built-in on_raw
             /// pulse dump (this protocol has no ESPHome built-in decoder, unlike
             /// fujitsu_264's on_aeha). Only implemented for Model::MITSUBISHI_AC.
@@ -127,6 +141,7 @@ namespace esphome
             uint8_t dry_level_ = 1;
             uint8_t vertical_vane_ = 0;
             bool powerful_ = false;
+            bool current_cut_ = false;
 
             optional<bool> supports_auto_override_;
             optional<bool> supports_fan_only_override_;
