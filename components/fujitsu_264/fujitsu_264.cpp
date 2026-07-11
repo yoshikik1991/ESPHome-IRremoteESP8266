@@ -237,6 +237,14 @@ namespace esphome
 
         void Fujitsu264Climate::send()
         {
+            // Re-applied on every transmission regardless of what triggered it
+            // (transmit_state()'s apply_state()+send(), or a lightweight setter
+            // like set_clean() itself that calls send() directly) -- mirrors
+            // mitsubishi::send()'s own re-poke of its custom bits, so
+            // this->clean_ is always the source of truth for the actual
+            // outgoing frame, not just for whatever apply_state() last built.
+            this->ac_.setClean(this->clean_);
+
             uint8_t *message = this->ac_.getRaw();
             uint8_t length = this->ac_.getStateLength();
 
@@ -439,12 +447,6 @@ namespace esphome
             }
             else
             {
-                // Re-applied on every transmission regardless of what triggered it
-                // (mirrors mitsubishi::send()'s own re-poke of its custom bits),
-                // so this->clean_ -- not whatever IRFujitsuAC264's own constructed
-                // default happens to be -- is always the source of truth.
-                this->ac_.setClean(this->clean_);
-
                 if (this->mode == climate::CLIMATE_MODE_HEAT_COOL)
                 {
                     // In auto mode the AC picks the base temperature itself and only
