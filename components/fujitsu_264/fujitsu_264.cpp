@@ -2,6 +2,7 @@
 #include <cstring>
 
 #include "esphome/core/helpers.h"
+#include "esphome/components/remote_base/aeha_protocol.h"
 
 #include "fujitsu_264.h"
 
@@ -56,6 +57,18 @@ namespace esphome
             if (call.has_custom_fan_mode())
                 this->set_custom_fan_mode_(call.get_custom_fan_mode());
             climate_ir::ClimateIR::control(call);
+        }
+
+        bool Fujitsu264Climate::on_receive(remote_base::RemoteReceiveData data)
+        {
+            // Entry point for receive-sync: replaces the YAML-side `on_aeha:`
+            // trigger that used to call update_from_aeha() by hand. Requires
+            // `receiver_id:` to be set on this climate's YAML config, otherwise
+            // ClimateIR never registers us as a RemoteReceiverListener at all.
+            auto aeha = remote_base::AEHAProtocol().decode(data);
+            if (!aeha.has_value())
+                return false;
+            return this->update_from_aeha(aeha->address, aeha->data);
         }
 
         void Fujitsu264Climate::set_fan_angle(const uint8_t fan_angle)
@@ -157,7 +170,13 @@ namespace esphome
 
         void Fujitsu264Climate::set_clean(const bool clean)
         {
-            this->ac_.setClean(clean);
+            // No-op when unchanged. Also breaks the feedback loop where our own
+            // transmission is picked up by the IR receiver, synced back into
+            // this state via update_from_aeha(), and would otherwise be
+            // re-transmitted forever (same reason as set_weak_dry()).
+            if (this->clean_ == clean)
+                return;
+            this->clean_ = clean;
             ESP_LOGI(TAG, "Set clean mode to %s", clean ? "ON" : "OFF");
             this->send();
         }
@@ -382,10 +401,24 @@ namespace esphome
                 this->horizontal_angle_ = horizontal_angle;
 
             this->weak_dry_ = this->ac_.isWeakDry();
+            this->clean_ = this->ac_.getClean();
             this->prev_mode_ = this->mode;
 
             ESP_LOGI(TAG, "Synced state from real remote: %s", this->ac_.toString().c_str());
             this->publish_state();
+            // Replaces the YAML-side manual id(select_x).publish_state(...) calls
+            // that used to run after a successful on_aeha: sync. Each child entity
+            // is optional (nullptr if not declared in the device's YAML).
+            if (this->weak_dry_select_ != nullptr)
+                this->weak_dry_select_->publish_state(this->weak_dry_ ? 1 : 0);
+            if (this->vertical_angle_select_ != nullptr)
+                this->vertical_angle_select_->publish_state(this->vertical_angle_ - 1);
+            if (this->horizontal_angle_select_ != nullptr)
+                this->horizontal_angle_select_->publish_state(this->horizontal_angle_ - 1);
+            if (this->temp_auto_offset_number_ != nullptr)
+                this->temp_auto_offset_number_->publish_state(this->temp_auto_offset_);
+            if (this->internal_clean_switch_ != nullptr)
+                this->internal_clean_switch_->publish_state(this->clean_);
             return true;
         }
 
@@ -406,6 +439,12 @@ namespace esphome
             }
             else
             {
+                // Re-applied on every transmission regardless of what triggered it
+                // (mirrors mitsubishi::send()'s own re-poke of its custom bits),
+                // so this->clean_ -- not whatever IRFujitsuAC264's own constructed
+                // default happens to be -- is always the source of truth.
+                this->ac_.setClean(this->clean_);
+
                 if (this->mode == climate::CLIMATE_MODE_HEAT_COOL)
                 {
                     // In auto mode the AC picks the base temperature itself and only

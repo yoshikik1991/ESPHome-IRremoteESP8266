@@ -6,6 +6,9 @@
 #include "esphome/core/component.h"
 #include "esphome/core/automation.h"
 #include "esphome/components/ir_remote_base/ir_remote_base.h"
+#include "esphome/components/select/select.h"
+#include "esphome/components/switch/switch.h"
+#include "esphome/components/number/number.h"
 #include "ir_Fujitsu.h"
 
 namespace esphome
@@ -38,7 +41,6 @@ namespace esphome
 
             void set_fan_angle(const uint8_t fan_angle);
             void toggle_powerful();
-            void set_clean(const bool clean);
             void toggle_sterilization();
             void set_weak_dry(const bool weak_dry);
 
@@ -71,11 +73,25 @@ namespace esphome
             /// internally. Returns true if state was updated.
             bool update_from_aeha(const uint16_t raw_address, const std::vector<uint8_t> &raw_data);
             bool get_weak_dry() const { return this->weak_dry_; }
-            bool get_clean() const { return this->ac_.getClean(); }
+
+            /// Internal clean function. Not exposed by IRFujitsuAC264 at all.
+            /// Tracked independently of the library (rather than reading
+            /// ac_.getClean() back) so this component's own standard/no-entity
+            /// default (false/off) doesn't depend on the vendored library's own
+            /// unverified constructed default.
+            void set_clean(const bool clean);
+            bool get_clean() const { return this->clean_; }
+
+            SUB_SELECT(weak_dry)
+            SUB_SELECT(vertical_angle)
+            SUB_SELECT(horizontal_angle)
+            SUB_NUMBER(temp_auto_offset)
+            SUB_SWITCH(internal_clean)
 
         protected:
             void control(const climate::ClimateCall &call) override;
             void transmit_state() override;
+            bool on_receive(remote_base::RemoteReceiveData data) override;
 
         private:
             void send();
@@ -83,6 +99,7 @@ namespace esphome
 
             IRFujitsuAC264 ac_ = IRFujitsuAC264(255); // pin is not used
             bool weak_dry_ = false;
+            bool clean_ = false;
             float temp_auto_offset_ = 0;
 
             // Climate mode as of the last apply_state()/update_from_aeha(), used

@@ -2,6 +2,7 @@
 #include <cstring>
 
 #include "esphome/core/helpers.h"
+#include "esphome/components/remote_base/aeha_protocol.h"
 
 #include "mitsubishi.h"
 
@@ -139,9 +140,38 @@ namespace esphome
                 // remembered vane position back to auto, rather than silently
                 // keeping whatever fixed position was last selected.
                 if (was_vertical && !will_be_vertical)
+                {
                     this->vertical_vane_ = kMitsubishiAcVaneAuto;
+                    // Replaces the YAML-side `climate: on_state:` trigger that
+                    // used to keep "上下角度 (V)" in sync with this reset.
+                    if (this->vertical_vane_select_ != nullptr)
+                        this->vertical_vane_select_->publish_state(this->vertical_vane_);
+                }
             }
             climate_ir::ClimateIR::control(call);
+        }
+
+        bool MitsubishiClimate::on_receive(remote_base::RemoteReceiveData data)
+        {
+            // Entry point for receive-sync: replaces the YAML-side `on_raw:`/
+            // `on_aeha:` triggers that used to call update_from_raw()/
+            // update_from_aeha() by hand. Requires `receiver_id:` to be set on
+            // this climate's YAML config, otherwise ClimateIR never registers us
+            // as a RemoteReceiverListener at all.
+            //
+            // Try the short AEHA-timed toggle codes (dry level cycle / internal
+            // clean button) first. MITSUBISHI_AC's own main-state timings sit
+            // within AEHAProtocol's decode tolerance too, so this may well
+            // successfully parse the main frame's pulses as a (bogus, wrong bit
+            // order) AEHAData -- harmless, since update_from_aeha() rejects
+            // anything whose address isn't the dedicated toggle-code address as
+            // its very first check, exactly as happens today with the on_raw:/
+            // on_aeha: YAML triggers both firing independently on every frame.
+            auto aeha = remote_base::AEHAProtocol().decode(data);
+            if (aeha.has_value() && this->update_from_aeha(aeha->address, aeha->data))
+                return true;
+            data.reset();
+            return this->update_from_raw(data.get_raw_data());
         }
 
         void MitsubishiClimate::set_model(const Model model)
@@ -766,6 +796,19 @@ namespace esphome
 
             ESP_LOGI(TAG, "Synced state from real remote: %s", this->ac_.toString().c_str());
             this->publish_state();
+            // Replaces the YAML-side manual id(select_x/switch_x).publish_state(...)
+            // calls that used to run after a successful on_raw: sync. Each child
+            // entity is optional (nullptr if not declared in the device's YAML).
+            if (this->dry_level_select_ != nullptr)
+                this->dry_level_select_->publish_state(this->dry_level_);
+            if (this->vertical_vane_select_ != nullptr)
+                this->vertical_vane_select_->publish_state(this->vertical_vane_);
+            if (this->internal_clean_switch_ != nullptr)
+                this->internal_clean_switch_->publish_state(this->clean_);
+            if (this->powerful_switch_ != nullptr)
+                this->powerful_switch_->publish_state(this->powerful_);
+            if (this->current_cut_switch_ != nullptr)
+                this->current_cut_switch_->publish_state(this->current_cut_);
             return true;
         }
 
@@ -812,6 +855,8 @@ namespace esphome
                 else
                     return false;
                 this->publish_state();
+                if (this->dry_level_select_ != nullptr)
+                    this->dry_level_select_->publish_state(this->dry_level_);
                 return true;
             }
 
@@ -820,6 +865,8 @@ namespace esphome
             {
                 this->clean_ = true;
                 this->publish_state();
+                if (this->internal_clean_switch_ != nullptr)
+                    this->internal_clean_switch_->publish_state(this->clean_);
                 return true;
             }
 

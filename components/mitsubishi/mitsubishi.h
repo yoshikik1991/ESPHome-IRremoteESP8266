@@ -7,6 +7,8 @@
 #include "esphome/core/automation.h"
 #include "esphome/core/optional.h"
 #include "esphome/components/ir_remote_base/ir_remote_base.h"
+#include "esphome/components/select/select.h"
+#include "esphome/components/switch/switch.h"
 #include "ir_Mitsubishi.h"
 
 namespace esphome
@@ -109,6 +111,12 @@ namespace esphome
             /// replaces). Returns true if state was updated.
             bool update_from_aeha(const uint16_t address, const std::vector<uint8_t> &data);
 
+            SUB_SELECT(dry_level)
+            SUB_SELECT(vertical_vane)
+            SUB_SWITCH(powerful)
+            SUB_SWITCH(current_cut)
+            SUB_SWITCH(internal_clean)
+
             /// Restrict the exposed climate modes/swing modes below what the
             /// library/model otherwise supports, for units that don't have a
             /// given feature at all (e.g. no auto/fan-only mode, no horizontal
@@ -124,6 +132,7 @@ namespace esphome
             void control(const climate::ClimateCall &call) override;
             void transmit_state() override;
             climate::ClimateTraits traits() override;
+            bool on_receive(remote_base::RemoteReceiveData data) override;
 
         private:
             void send();
