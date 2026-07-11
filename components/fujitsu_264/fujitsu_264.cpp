@@ -237,30 +237,48 @@ namespace esphome
 
         void Fujitsu264Climate::send()
         {
-            // Re-applied on every transmission regardless of what triggered it
-            // (transmit_state()'s apply_state()+send(), or a lightweight setter
-            // like set_clean() itself that calls send() directly) -- mirrors
-            // mitsubishi::send()'s own re-poke of its custom bits, so
-            // this->clean_ is always the source of truth for the actual
-            // outgoing frame, not just for whatever apply_state() last built.
-            this->ac_.setClean(this->clean_);
-
             uint8_t *message = this->ac_.getRaw();
             uint8_t length = this->ac_.getStateLength();
 
-            if (this->pending_horizontal_angle_)
+            if (length == kFujitsuAc264StateLength)
             {
-                // checkSum() (invoked by getRaw() above) unconditionally forces
-                // raw[28]'s high nibble to 0xF, assuming it's unused -- but on this
-                // unit it's the horizontal angle. Overwrite it and Cmd, then
-                // recompute the checksum ourselves to undo that clobber.
-                message[18] = kFujitsuAc264CmdFanAngleHoriz;
-                message[28] = (message[28] & 0x0F) | (this->horizontal_angle_ << 4);
+                // Poke the Clean bit directly (raw[16] bit 0) rather than call
+                // the library's own setClean(): that setter ALSO stamps
+                // Cmd/SubCmd = CmdClean (see ir_Fujitsu.cpp), which would
+                // clobber whatever Cmd apply_state()'s setMode()/setCmd() just
+                // computed for the actual control action on this transmission
+                // -- silently turning every mode/temp/fan/swing/angle change
+                // into a no-op Clean-toggle frame instead. (Found via real
+                // hardware: mode changes stopped working entirely after an
+                // earlier attempt called ac_.setClean() unconditionally here.)
+                // Mirrors set_horizontal_angle()'s own direct-byte-poke for
+                // the same "avoid the library setter's Cmd side effect"
+                // reason. Only meaningful on full-length frames -- the short/
+                // middle frames (power off, toggle-powerful, sterilization)
+                // have no byte 16 slot at all.
+                if (this->clean_)
+                    message[16] |= 0x01;
+                else
+                    message[16] &= ~0x01;
+
+                if (this->pending_horizontal_angle_)
+                {
+                    // checkSum() (invoked by getRaw() above) unconditionally
+                    // forces raw[28]'s high nibble to 0xF, assuming it's
+                    // unused -- but on this unit it's the horizontal angle.
+                    // Overwrite it and Cmd here.
+                    message[18] = kFujitsuAc264CmdFanAngleHoriz;
+                    message[28] = (message[28] & 0x0F) | (this->horizontal_angle_ << 4);
+                    this->pending_horizontal_angle_ = false;
+                }
+
+                // Recompute the checksum ourselves: checkSum() (already run
+                // once, inside getRaw() above) doesn't know about the
+                // raw[16]/raw[28] patches just made.
                 uint8_t sum = 0;
                 for (uint8_t i = 0; i < length - 1; i++)
                     sum += message[i];
                 message[length - 1] = static_cast<uint8_t>(0xAF - sum);
-                this->pending_horizontal_angle_ = false;
             }
 
             // Logged at INFO (not DEBUG) so a fan-speed/swing change can be
