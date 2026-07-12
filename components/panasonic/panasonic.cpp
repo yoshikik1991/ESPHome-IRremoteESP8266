@@ -1,3 +1,6 @@
+#include "esphome/core/helpers.h"
+#include "esphome/components/remote_base/aeha_protocol.h"
+
 #include "panasonic.h"
 
 namespace esphome
@@ -14,7 +17,24 @@ namespace esphome
         const uint16_t kPanasonicAcSection1Length = 8;
         const uint32_t kPanasonicAcMessageGap = kDefaultMessageGap;
 
+        // Section 1 of every valid frame is a constant 8 bytes (copied from
+        // kPanasonicKnownGoodState in ir_Panasonic.h -- its first
+        // kPanasonicAcSection1Length bytes). Used to reconstruct a full 27-byte
+        // frame when only section 2 was decoded as its own receive event (see
+        // update_from_aeha()).
+        static const uint8_t kPanasonicSection1Prefix[kPanasonicAcSection1Length] = {
+            0x02, 0x20, 0xE0, 0x04, 0x00, 0x00, 0x00, 0x06};
+
         static const char *const TAG = "panasonic.climate";
+
+        // ESPHome's built-in AEHAProtocol decoder reads bits MSB-first. This
+        // protocol is assumed to also transmit LSB-first on the wire, like
+        // fujitsu_264 (confirmed there against a real capture) -- UNVERIFIED
+        // here (no Panasonic hardware available), but IRremoteESP8266 sends this
+        // whole protocol family LSB-first in general. Every value AEHAProtocol
+        // hands us therefore needs un-reversing: the 16-bit address as a whole,
+        // and each data byte independently (reverse_bits8/16 live on
+        // IrRemoteBase).
 
         void PanasonicClimate::set_model(const Model model)
         {
@@ -25,6 +45,19 @@ namespace esphome
         {
             climate_ir::ClimateIR::setup();
             this->apply_state();
+        }
+
+        bool PanasonicClimate::on_receive(remote_base::RemoteReceiveData data)
+        {
+            // Entry point for receive-sync: mirrors fujitsu_264's on_receive()
+            // exactly (single AEHAProtocol().decode() attempt -> update_from_aeha()).
+            // Requires `receiver_id:` to be set on this climate's YAML config,
+            // otherwise ClimateIR never registers us as a RemoteReceiverListener
+            // at all.
+            auto aeha = remote_base::AEHAProtocol().decode(data);
+            if (!aeha.has_value())
+                return false;
+            return this->update_from_aeha(aeha->address, aeha->data);
         }
 
         climate::ClimateTraits PanasonicClimate::traits()
@@ -138,6 +171,136 @@ namespace esphome
             }
 
             ESP_LOGI(TAG, "%s", this->ac_.toString().c_str());
+        }
+
+        bool PanasonicClimate::update_from_aeha(const uint16_t raw_address, const std::vector<uint8_t> &raw_data)
+        {
+            if (this->rx_locked_out())
+            {
+                ESP_LOGD(TAG, "Ignoring AEHA frame received shortly after our own transmission");
+                return false;
+            }
+
+            const uint16_t address = reverse_bits16(raw_address);
+            std::vector<uint8_t> raw;
+            raw.reserve(2 + raw_data.size());
+            raw.push_back(static_cast<uint8_t>(address & 0xFF));
+            raw.push_back(static_cast<uint8_t>((address >> 8) & 0xFF));
+            for (uint8_t b : raw_data)
+                raw.push_back(reverse_bits8(b));
+
+            // Full wire-order dump of every frame/section from the real remote --
+            // capture tool for mapping unknown buttons, same pattern as
+            // fujitsu_264's own update_from_aeha().
+            ESP_LOGD(TAG, "AEHA frame from remote (%u bytes): %s", raw.size(),
+                     format_hex_pretty(raw.data(), raw.size()).c_str());
+
+            std::vector<uint8_t> full;
+            if (raw.size() == kPanasonicAcSection1Length)
+            {
+                // Section 1 alone (its own receive event, the common case given
+                // the ~10ms inter-section gap): constant, carries no state.
+                ESP_LOGD(TAG, "Panasonic AC section 1 observed (no state to sync)");
+                return false;
+            }
+            else if (raw.size() == kPanasonicAcStateLength - kPanasonicAcSection1Length)
+            {
+                // Section 2 alone: prepend the constant section-1 prefix to
+                // reconstruct a full frame.
+                full.reserve(kPanasonicAcStateLength);
+                full.insert(full.end(), kPanasonicSection1Prefix, kPanasonicSection1Prefix + kPanasonicAcSection1Length);
+                full.insert(full.end(), raw.begin(), raw.end());
+            }
+            else if (raw.size() == kPanasonicAcStateLength)
+            {
+                // Both sections decoded as a single frame already (e.g. a
+                // shorter idle threshold than the section gap).
+                full = raw;
+            }
+            else
+            {
+                return false;
+            }
+
+            if (!IRPanasonicAc::validChecksum(full.data(), full.size()))
+            {
+                ESP_LOGW(TAG, "Ignoring AEHA frame with invalid checksum");
+                return false;
+            }
+
+            this->ac_.setRaw(full.data());
+
+            if (!this->ac_.getPower())
+            {
+                ESP_LOGI(TAG, "Synced state from real remote: OFF");
+                this->mode = climate::CLIMATE_MODE_OFF;
+                this->publish_state();
+                return true;
+            }
+
+            switch (this->ac_.getMode())
+            {
+            case kPanasonicAcAuto:
+                this->mode = climate::CLIMATE_MODE_HEAT_COOL;
+                break;
+            case kPanasonicAcCool:
+                this->mode = climate::CLIMATE_MODE_COOL;
+                break;
+            case kPanasonicAcHeat:
+                this->mode = climate::CLIMATE_MODE_HEAT;
+                break;
+            case kPanasonicAcDry:
+                this->mode = climate::CLIMATE_MODE_DRY;
+                break;
+            case kPanasonicAcFan:
+                this->mode = climate::CLIMATE_MODE_FAN_ONLY;
+                break;
+            default:
+                ESP_LOGW(TAG, "Unknown mode in received frame: %d", this->ac_.getMode());
+                return false;
+            }
+
+            this->target_temperature = this->ac_.getTemp();
+
+            switch (this->ac_.getFan())
+            {
+            case kPanasonicAcFanAuto:
+                this->fan_mode = climate::CLIMATE_FAN_AUTO;
+                break;
+            case kPanasonicAcFanMin:
+                this->fan_mode = climate::CLIMATE_FAN_QUIET;
+                break;
+            case kPanasonicAcFanLow:
+                this->fan_mode = climate::CLIMATE_FAN_LOW;
+                break;
+            case kPanasonicAcFanMed:
+                this->fan_mode = climate::CLIMATE_FAN_MEDIUM;
+                break;
+            case kPanasonicAcFanHigh:
+                this->fan_mode = climate::CLIMATE_FAN_HIGH;
+                break;
+            default:
+                this->fan_mode = climate::CLIMATE_FAN_AUTO;
+                break;
+            }
+
+            // Horizontal swing is only meaningful on DKE/RKR models (see
+            // traits()), but if the frame's own remote sent it, the physical
+            // unit clearly has it -- sync it regardless of the configured model.
+            const bool vertical_on = (this->ac_.getSwingVertical() == kPanasonicAcSwingVAuto);
+            const bool horizontal_on = (this->ac_.getSwingHorizontal() == kPanasonicAcSwingHAuto);
+            if (vertical_on && horizontal_on)
+                this->swing_mode = climate::CLIMATE_SWING_BOTH;
+            else if (vertical_on)
+                this->swing_mode = climate::CLIMATE_SWING_VERTICAL;
+            else if (horizontal_on)
+                this->swing_mode = climate::CLIMATE_SWING_HORIZONTAL;
+            else
+                this->swing_mode = climate::CLIMATE_SWING_OFF;
+
+            ESP_LOGI(TAG, "Synced state from real remote: %s", this->ac_.toString().c_str());
+            this->publish_state();
+            return true;
         }
 
     } // namespace panasonic_general

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <vector>
+
 #include "esphome/core/log.h"
 #include "esphome/core/component.h"
 #include "esphome/core/automation.h"
@@ -55,9 +57,27 @@ namespace esphome
             void toggle_powerful();
             bool is_powerful() const { return this->powerful_state_; }
 
+            /// Sync state from a frame captured by ESPHome's built-in AEHA decoder
+            /// (e.g. the real remote was used). raw_address/raw_data are bit-reversed
+            /// by that decoder relative to the wire encoding; this un-reverses them
+            /// internally, mirroring fujitsu_264's own update_from_aeha() (this
+            /// legacy protocol shares the same 0x14 0x63 vendor header). Only the
+            /// ARRAH2E-family long (16-byte) and short (7-byte) code lengths are
+            /// recognized; ARDB1/ARJW2's one-byte-shorter long/short codes are not
+            /// handled (no hardware available to confirm the mapping). Short
+            /// frames other than power-off (econo/powerful toggles, step-vane
+            /// commands) carry no absolute mode/temp/fan/swing payload and are
+            /// only logged, not synced onto the climate entity.
+            /// UNVERIFIED on real hardware -- compile-tested only. No physical
+            /// unit of this protocol family was available; implemented by
+            /// mirroring the verified fujitsu_264/mitsubishi receive paths.
+            /// Returns true if state was updated.
+            bool update_from_aeha(const uint16_t raw_address, const std::vector<uint8_t> &raw_data);
+
         protected:
             void transmit_state() override;
             void control(const climate::ClimateCall &call) override;
+            bool on_receive(remote_base::RemoteReceiveData data) override;
 
         private:
             void send();

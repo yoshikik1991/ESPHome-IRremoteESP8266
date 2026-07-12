@@ -1,5 +1,7 @@
 #pragma once
 
+#include <vector>
+
 #include "esphome/core/log.h"
 #include "esphome/core/component.h"
 #include "esphome/core/automation.h"
@@ -29,8 +31,19 @@ namespace esphome
 
             void setup() override;
 
+            /// Sync state from ESPHome's built-in on_raw pulse dump. This
+            /// protocol has no ESPHome built-in decoder and isn't AEHA-timed
+            /// (its leader is 3800/1900 vs. AEHA's 3400/1700), same reasoning as
+            /// electra's own update_from_raw().
+            /// UNVERIFIED on real hardware -- compile-tested only. No physical
+            /// unit of this protocol family was available; implemented by
+            /// mirroring the verified fujitsu_264/mitsubishi receive paths.
+            /// Returns true if a valid frame was decoded and applied.
+            bool update_from_raw(const std::vector<int32_t> &pulses);
+
         protected:
             void transmit_state() override;
+            bool on_receive(remote_base::RemoteReceiveData data) override;
 
         private:
             void send();
