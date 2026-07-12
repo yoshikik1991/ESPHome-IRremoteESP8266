@@ -4,7 +4,7 @@ This is a collection for `climate` implementations using the awesome [IRremoteES
 
 For now only some protocols are implemented, please open an issue or an PR to add more.
 
-Most platforms are transmit-only. `fujitsu-264` additionally supports **receive mode**: it can decode frames sent by the physical remote (captured via ESPHome's `remote_receiver`) and sync the climate entity's state to match. See [Receive mode](#receive-mode-syncing-from-a-physical-remote) below.
+Most platforms are transmit-only, but every platform on this fork can also **receive**: it can decode frames sent by the physical remote (captured via ESPHome's `remote_receiver`) and sync the climate entity's (and any related `select`/`switch`/`number` entity's) state to match. Two platforms (`fujitsu-264`, `mitsubishi`) are verified against real hardware; the rest are compile-tested only. See the [verification status table](#receive-mode-syncing-from-a-physical-remote) below before relying on receive mode for a platform other than those two.
 
 **Supported platforms:**
 - [fujitsu](#fujitsu)
@@ -46,11 +46,32 @@ It supports other options of [climate_ir](https://esphome.io/components/climate/
 > [!WARNING]
 > Only Arduino Framework is supported
 
+### Library version policy
+
+Most platforms load `IRremoteESP8266` through the shared `ir_remote_base.load_ir_remote()` helper, which pins the **registry** release `2.9.0` (rather than "latest"). This is deliberate: an earlier unpinned resolve picked up a newer registry release whose `IRrecv.cpp` called Arduino-ESP32 timer APIs (`timerAlarmEnable()`, the 3-argument `timerBegin()`/`timerAttachInterrupt()` overloads) that a newer `arduino-esp32` core had removed, silently breaking the cold build. `2.9.0` is the last version confirmed to build cleanly.
+
+`fujitsu-264` is the one exception: it pins a specific commit of a community fork (`hldh214/IRremoteESP8266@564c20fa...`) directly in its own `climate.py`, because AC264 support ([crankyoldgit/IRremoteESP8266#2030](https://github.com/crankyoldgit/IRremoteESP8266/pull/2030)) isn't in any official release yet. New platforms should default to the shared, registry-pinned loader and only reach for a fork/commit pin if the feature they need genuinely isn't released yet.
+
 ## Receive mode (syncing from a physical remote)
 
-Some platforms can also decode frames sent by the *physical* remote and reflect them onto the climate entity (and any related `select`/`switch`/`number` entities), so Home Assistant stays in sync when someone uses the remote directly instead of the app. This is opt-in per platform — check the platform's own section for a `update_from_aeha()` / `update_from_raw()` method before relying on it; if a platform doesn't mention one, it doesn't support receive mode yet.
+Some platforms can also decode frames sent by the *physical* remote and reflect them onto the climate entity (and any related `select`/`switch`/`number` entities), so Home Assistant stays in sync when someone uses the remote directly instead of the app.
 
-The general pattern is a `remote_receiver` wired to the same IR receiver diode, with an `on_aeha` (for AEHA-family protocols) or `on_raw` (for everything else) trigger that hands the decoded frame to the climate entity:
+### Verification status
+
+| Platform | Receive sync | Verified on |
+|---|---|---|
+| `fujitsu-264` | yes | Real hardware — Fujitsu `AR-RLB1J` remote, bedroom unit |
+| `mitsubishi` | yes (model `MITSUBISHI_AC` only) | Real hardware — living-room MSZ-series unit (2026-07) |
+| `fujitsu` (legacy) | yes | Compile-tested only — **unverified** on real hardware |
+| `panasonic` | yes | Compile-tested only — **unverified** on real hardware |
+| `electra` | yes | Compile-tested only — **unverified** on real hardware |
+| `sharp` | yes | Compile-tested only — **unverified** on real hardware |
+
+The four "compile-tested only" platforms were implemented by mirroring the two verified receive paths against each protocol's own byte layout, without a physical unit to confirm the mapping against. If you own one of these units and try receive mode, feedback (working or not) is welcome via an issue.
+
+### Enabling it
+
+Add a `receiver_id:` pointing at your `remote_receiver` to the `climate:` block. Each platform's own `on_receive()` then decodes the frame and updates the climate entity (and any declared `select`/`switch`/`number` sub-entities) automatically — there is no YAML lambda to write:
 
 ```yaml
 remote_receiver:
@@ -62,22 +83,29 @@ remote_receiver:
   rmt_symbols: 512
   receive_symbols: 512
 
-  on_aeha:
-    then:
-      - lambda: |-
-          if (id(my_climate).update_from_aeha(x.address, x.data)) {
-            // The climate entity itself is already updated by update_from_aeha();
-            // publish any other entities that mirror its state so their displayed
-            // value follows a remote-initiated change too.
-            id(some_related_select).publish_state(id(my_climate).get_something());
-          }
+climate:
+  - platform: <platform_name>
+    name: 'Living Room AC'
+    # Required to enable receive mode: without this, the climate entity is
+    # never registered as a listener on my_receiver at all. It is NOT
+    # auto-resolved even if there's only one remote_receiver in the device —
+    # climate_ir's own schema declares it as a plain cv.Optional, not a
+    # cv.GenerateID, so it has to be spelled out explicitly every time.
+    receiver_id: my_receiver
 ```
 
 > [!NOTE]
 > ESPHome's built-in `remote_receiver` on an ESP32-S3 only allocates 192 RMT symbols by default, enough for short frames but not for longer ones (e.g. fujitsu-264's 33-byte/264-bit frame is ~266 symbols). If frames longer than a few bytes are getting dropped or truncated, set `use_dma: true` together with `rmt_symbols: 512` and `receive_symbols: 512` (or higher) as shown above.
 
+Internally, each platform's `on_receive()` runs ESPHome's own `AEHAProtocol` decoder (for AEHA-family protocols) or a raw pulse decode (for everything else) and hands the result to that platform's `update_from_aeha()`/`update_from_raw()` method — the same methods documented in each platform's own section below.
+
+> [!NOTE]
+> ESPHome's built-in AEHA decoder reads bits MSB-first, but every AEHA-family protocol on this fork (fujitsu-264, fujitsu legacy, panasonic) actually transmits LSB-first on the wire. Each platform's `update_from_aeha()` un-reverses `address` and each byte of `data` internally (via `IrRemoteBase::reverse_bits8()`/`reverse_bits16()`), so callers never need to.
+
 > [!TIP]
-> If you're writing a `set_xxx()` method that both transmits *and* is called from your own `on_value`/`on_press` automations (e.g. a `select` or `number` entity mirroring physical-remote state), give it a no-op guard when the new value equals the current one. Without it, a remote-initiated change flows: physical remote → `update_from_aeha()` → entity `publish_state()` → the entity's `on_value` → your `set_xxx()` → a retransmission → picked back up by the receiver → repeat forever. `rx_locked_out()` (the internal guard platforms like fujitsu-264 use against their own echo) only suppresses *our own* transmission's echo for a short window; it does not prevent this second, unrelated loop through an entity's own automation.
+> Our own transmissions get picked up by the same IR receiver as an echo. `IrRemoteBase::rx_locked_out()` suppresses any frame received within 500 ms of our last transmission (tracked via `sendGeneric()`) so it isn't mistaken for a real remote-initiated change.
+>
+> That's not the only loop to worry about, though: native `select`/`number`/`switch` sub-entities are opt-in child components that a platform's `update_from_*()` calls `publish_state()` on directly (see each platform's section below) — they no longer route back through a YAML `on_value`/`on_press` automation, so the classic "receive → publish_state → on_value → retransmit → picked back up by the receiver → repeat" loop is now structurally prevented for the entities that ship with a platform. Setters still keep a value-only no-op guard (skip if the new value equals the current one) anyway, both as a second line of defense and to avoid redundant retransmits when a sync republishes an unchanged value.
 
 ## fujitsu
 
@@ -134,6 +162,12 @@ button:
 > [!NOTE]
 > Because there is no state feedback, toggling Eco or Powerful from the physical IR remote will desync the assumed state until the next ESPHome-initiated change. Both default to `off` on power-on, matching a fresh boot of the indoor unit.
 
+#### Receive mode
+
+Supported via `receiver_id:` on the `climate:` block (see [Receive mode](#receive-mode-syncing-from-a-physical-remote) above). **Compile-tested only, unverified on real hardware** — no physical unit of this legacy protocol family was available; `update_from_aeha()` was implemented by mirroring fujitsu-264's own verified receive path (it shares the same `0x14 0x63` vendor header and LSB-first-on-the-wire convention).
+
+Only the `ARRAH2E`-family long (16-byte) and short (7-byte) code lengths are recognized — `ARDB1`/`ARJW2`'s one-byte-shorter long/short codes aren't handled. Short frames other than power-off (econo/powerful toggles, step-vane commands) carry no absolute mode/temp/fan/swing payload and are only logged (`ESP_LOGD`), not synced onto the climate entity.
+
 ## fujitsu-264
 
 This platform implements the special Fujitsu protocol of the `AR-RLB2J` remote.
@@ -144,6 +178,8 @@ This platform implements the special Fujitsu protocol of the `AR-RLB2J` remote.
 climate:
   - platform: fujitsu_264
     name: 'Living Room AC'
+    # Enables receive mode — see "Receive mode" subsection below.
+    receiver_id: my_receiver
 ```
 
 #### Toggle powerful
@@ -175,102 +211,62 @@ button:
             id(my_climate).set_fan_angle(1);
 ```
 
-#### Vertical angle
-
-Fixed vertical (up/down) louver position via `set_vertical_angle()` / `get_vertical_angle()`. Unlike `set_fan_angle()` above, this accepts the full **1 (up) to 8 (down)** range some units support, stops continuous vertical swing when sent, and updates the entity's `swing_mode` accordingly.
-
-```yaml
-select:
-  - platform: template
-    name: 'Vertical angle'
-    id: select_vertical_angle
-    options: ["1", "2", "3", "4", "5", "6", "7", "8"]
-    optimistic: true
-    on_value:
-      then:
-        - lambda: |-
-            id(my_climate).set_vertical_angle(atoi(x.c_str()));
-```
-
-#### Horizontal swing and angle
-
-`CLIMATE_SWING_HORIZONTAL` and `CLIMATE_SWING_BOTH` are supported via the climate entity's standard `swing_mode`, alongside a fixed **1 (left) to 5 (right)** horizontal louver position via `set_horizontal_angle()` / `get_horizontal_angle()` (mirrors `set_vertical_angle()` above, but for the horizontal axis).
-
-```yaml
-select:
-  - platform: template
-    name: 'Horizontal angle'
-    id: select_horizontal_angle
-    options: ["1", "2", "3", "4", "5"]
-    optimistic: true
-    on_value:
-      then:
-        - lambda: |-
-            id(my_climate).set_horizontal_angle(atoi(x.c_str()));
-```
-
 #### Fan speed labels
 
 This platform exposes fan speed as a `custom_fan_mode` using the physical remote's own labels (自動/静音/微風/弱風/強風) instead of ESPHome's generic Low/Medium/High, so the Home Assistant UI reads the same as the remote. Select it from `climate.fan_mode` / `climate.set_custom_fan_mode` as usual; there is no YAML option to change the labels.
 
-#### Auto mode temperature offset
+#### Native select / number / switch entities
 
-In auto (heat/cool) mode the unit picks its own base temperature and only accepts a **-2.0 to +2.0** adjustment (in 0.5 steps) on top of it, so the climate entity's absolute `target_temperature` is meaningless there — it is pinned to a fixed display value of 24°C while in auto mode. Use `set_temp_auto_offset()` / `get_temp_auto_offset()` instead:
+Every extra control beyond the standard climate entity (weak dry, fixed louver angles, the auto-mode temperature offset, internal clean) is exposed as an **opt-in native sub-platform** parented to the `fujitsu_264` climate via `fujitsu_264_id:`. If an entity isn't declared in your YAML, it simply doesn't exist — the component keeps working internally with its own standard value (documented per-entity below) and nothing is added to Home Assistant. All declared `select`/`number` entities persist their value across reboots.
 
 ```yaml
+select:
+  - platform: fujitsu_264
+    fujitsu_264_id: my_climate
+    # Dry mode strength: "通常" (normal) / "ひかえめ" (gentle). Applied the next
+    # time dry mode is transmitted (immediately if already in dry mode).
+    # Picking a *different* value while not in dry mode switches into dry mode.
+    # Component default when undeclared: "通常" (normal).
+    weak_dry:
+      name: 'Weak dry'
+    # Fixed vertical (up/down) louver position, 1 (up) .. 8 (down). Selecting
+    # a position stops continuous vertical swing.
+    # Component default when undeclared: 1.
+    vertical_angle:
+      name: 'Vertical angle'
+    # Fixed horizontal (left/right) louver position, 1 (left) .. 5 (right).
+    # No field in the underlying library at all — reverse-engineered from a
+    # real-remote capture. Selecting a position stops continuous horizontal
+    # swing. Component default when undeclared: 1.
+    horizontal_angle:
+      name: 'Horizontal angle'
+
 number:
-  - platform: template
-    name: 'Auto mode temperature offset'
-    id: number_auto_temp_offset
-    min_value: -2.0
-    max_value: 2.0
-    step: 0.5
-    unit_of_measurement: "°C"
-    optimistic: true
-    restore_value: true
-    on_value:
-      then:
-        - lambda: |-
-            id(my_climate).set_temp_auto_offset(x);
-```
+  - platform: fujitsu_264
+    fujitsu_264_id: my_climate
+    # Auto (heat/cool) mode temperature adjustment, -2.0..+2.0 in 0.5 steps.
+    # In auto mode the unit picks its own base temperature and only accepts
+    # this relative offset, so the climate entity's target_temperature is
+    # pinned to a fixed display value of 24°C while in auto mode.
+    # Component default when undeclared: 0.
+    temp_auto_offset:
+      name: 'Auto mode temperature offset'
 
-#### Internal clean
-
-You can call the `set_clean()` method on the climate controller to enable or disable the internal clean function.
-
-```yaml
 switch:
-  - platform: template
-    name: 'Clean'
-    optimistic: true
-    turn_on_action:
-      then:
-        - lambda: |-
-            id(my_climate).set_clean(true);
-    turn_off_action:
-      then:
-        - lambda: |-
-            id(my_climate).set_clean(false);
+  - platform: fujitsu_264
+    fujitsu_264_id: my_climate
+    # Internal clean function, direct sense: ON = enabled. This entity
+    # defaults to RESTORE_DEFAULT_ON (ON at first boot, then whatever was
+    # persisted across reboots) -- but if this entity is NOT declared at all,
+    # the component's own internal default is OFF. That asymmetry is
+    # intentional: the entity's default matches what a fresh AC unit already
+    # does out of the box, while the component's fallback (with no entity to
+    # restore from) stays conservative.
+    internal_clean:
+      name: 'Internal clean'
 ```
 
-#### Weak dry
-
-You can call the `set_weak_dry()` method on the climate controller to switch the dry mode between normal and weak ("ひかえめ"). The setting is applied the next time dry mode is transmitted (immediately if the unit is already in dry mode).
-
-```yaml
-switch:
-  - platform: template
-    name: 'Weak dry'
-    optimistic: true
-    turn_on_action:
-      then:
-        - lambda: |-
-            id(my_climate).set_weak_dry(true);
-    turn_off_action:
-      then:
-        - lambda: |-
-            id(my_climate).set_weak_dry(false);
-```
+`CLIMATE_SWING_HORIZONTAL` and `CLIMATE_SWING_BOTH` are supported via the climate entity's standard `swing_mode`, in addition to the fixed-angle selects above.
 
 #### Sterilization
 
@@ -289,32 +285,9 @@ button:
 > [!NOTE]
 > The sterilization command is only accepted by the unit while it is powered off.
 
-#### Receive mode (sync from remote)
+#### Receive mode
 
-`update_from_aeha(address, data)` decodes a frame captured by ESPHome's built-in AEHA decoder (see [Receive mode](#receive-mode-syncing-from-a-physical-remote) above for the general `remote_receiver` setup) and updates the climate entity — mode, target temperature (or the auto-mode offset), fan speed, both swing axes and their fixed angles, weak-dry, and internal-clean state — to match what the physical remote just sent. It returns `true` if the frame was recognized and applied.
-
-```yaml
-remote_receiver:
-  id: my_receiver
-  pin: GPIOXX
-  dump: []
-  use_dma: true
-  rmt_symbols: 512
-  receive_symbols: 512
-
-  on_aeha:
-    then:
-      - lambda: |-
-          if (id(my_climate).update_from_aeha(x.address, x.data)) {
-            // Mirror any other entities that track fujitsu-264 state not
-            // exposed directly through the climate entity itself.
-            id(select_dry_strength).publish_state(id(my_climate).get_weak_dry() ? "弱" : "標準");
-            id(switch_internal_clean).publish_state(id(my_climate).get_clean());
-            id(number_auto_temp_offset).publish_state(id(my_climate).get_temp_auto_offset());
-            id(select_vertical_angle).publish_state(to_string(id(my_climate).get_vertical_angle()));
-            id(select_horizontal_angle).publish_state(to_string(id(my_climate).get_horizontal_angle()));
-          }
-```
+`update_from_aeha(address, data)` decodes a frame captured by ESPHome's built-in AEHA decoder and updates the climate entity — mode, target temperature (or the auto-mode offset), fan speed, both swing axes and their fixed angles, weak-dry, and internal-clean state — to match what the physical remote just sent, publishing any declared native `select`/`number`/`switch` entities above to match. It's wired up automatically by `on_receive()` once `receiver_id:` is set on the `climate:` block (see [Receive mode](#receive-mode-syncing-from-a-physical-remote) above) — no YAML lambda required.
 
 > [!NOTE]
 > ESPHome's built-in AEHA decoder reads bits MSB-first, but the Fujitsu-264 protocol transmits LSB-first on the wire. `update_from_aeha()` un-reverses `address` and each byte of `data` internally, so callers don't need to.
@@ -330,6 +303,12 @@ climate:
     name: 'Living Room AC'
 ```
 
+#### Receive mode
+
+Supported via `receiver_id:` on the `climate:` block (see [Receive mode](#receive-mode-syncing-from-a-physical-remote) above). **Compile-tested only, unverified on real hardware** — no physical unit was available; `update_from_aeha()` was implemented by mirroring fujitsu-264's own verified receive path, on the (unverified) assumption this protocol is also LSB-first on the wire.
+
+This protocol's real frame is 2 AEHA sections (8 bytes + 19 bytes) separated by a gap that normally splits them into separate receive events at `remote_receiver`'s default idle threshold. `update_from_aeha()` handles all three shapes it might see: a lone 8-byte section 1 carries no climate state and is just logged; a lone 19-byte section 2 has the constant 8-byte section-1 prefix prepended before use; a 27-byte frame (both sections decoded as one, e.g. with a shorter idle threshold) is used directly.
+
 ## electra
 
 Also known as Aux.
@@ -340,6 +319,12 @@ climate:
     name: 'Living Room AC'
 ```
 
+#### Receive mode
+
+Supported via `receiver_id:` on the `climate:` block (see [Receive mode](#receive-mode-syncing-from-a-physical-remote) above). **Compile-tested only, unverified on real hardware** — no physical unit was available; `update_from_raw()` was implemented by mirroring mitsubishi's own verified raw-pulse receive path.
+
+This protocol has no ESPHome built-in decoder and isn't AEHA-timed (its leader is 9166/4470 µs vs. AEHA's 3400/1700 µs), so it's decoded from raw pulses via the shared `decode_pulses()` helper instead of the AEHA path. Electra frames may arrive with repeats; `decode_pulses()` stops at the first pulse pair that doesn't fit the expected bit timing, so a single clean frame is what's expected.
+
 ## sharp
 
 ```yaml
@@ -349,18 +334,114 @@ climate:
     name: 'Living Room AC'
 ```
 
+#### Receive mode
+
+Supported via `receiver_id:` on the `climate:` block (see [Receive mode](#receive-mode-syncing-from-a-physical-remote) above). **Compile-tested only, unverified on real hardware** — no physical unit was available; `update_from_raw()` was implemented by mirroring mitsubishi's own verified raw-pulse receive path.
+
+Same reasoning as electra: no ESPHome built-in decoder and not AEHA-timed (leader 3800/1900 µs), so it's decoded from raw pulses via `decode_pulses()`.
+
 ## mitsubishi
 
 ```yaml
 climate:
   - platform: mitsubishi
-    model: XXXXXX
+    model: MITSUBISHI_AC
     name: 'Living Room AC'
+    # Enables receive mode (MITSUBISHI_AC only) — see "Receive mode" below.
+    receiver_id: my_receiver
 ```
+
+#### Model-based restriction options
+
+`model: MITSUBISHI_AC` exposes the widest feature set (auto/fan-only modes, quiet fan speed, horizontal swing); `MITSUBISHI136`/`MITSUBISHI112` are narrower physical protocols with their own fixed feature sets. On a real `MITSUBISHI_AC` unit that doesn't implement every feature the model otherwise supports, narrow it further with these options — they only ever remove support, never add it beyond what the `model` already exposes:
+
+```yaml
+climate:
+  - platform: mitsubishi
+    model: MITSUBISHI_AC
+    name: 'Living Room AC'
+    supports_auto: false
+    supports_fan_only: false
+    horizontal_swing: false
+    supports_quiet_fan: false
+```
+
+#### Native select / switch entities
+
+As with fujitsu-264, these are opt-in native sub-platforms parented to the climate via `mitsubishi_id:`. Undeclared entities don't exist in Home Assistant; the component keeps its own internal default (documented per-entity below).
+
+```yaml
+select:
+  - platform: mitsubishi
+    mitsubishi_id: my_climate
+    # Dry mode strength: "弱" (weak) / "標準" (normal) / "強" (strong).
+    # Picking a *different* value while not in dry mode switches into dry
+    # mode. Received frames only sync this while the unit is actually in dry
+    # mode -- other modes carry unrelated noise in the same byte nibble.
+    # Component default when undeclared: "標準" (normal).
+    dry_level:
+      name: 'Dry level'
+    # Fixed vertical louver position: "自動" (auto) plus 5 fixed positions.
+    # Picking a position (including auto) stops continuous vertical swing;
+    # turning vertical swing off via the climate's own swing control instead
+    # resets this back to auto. Component default when undeclared: auto.
+    vertical_vane:
+      name: 'Vertical vane'
+
+switch:
+  - platform: mitsubishi
+    mitsubishi_id: my_climate
+    # Internal clean function, direct sense: ON = enabled. Same
+    # RESTORE_DEFAULT_ON-entity / OFF-component-default asymmetry as
+    # fujitsu-264's internal_clean (see that platform's section above).
+    # Unlike the other switches here, toggling this does not transmit
+    # immediately -- the flag rides along on whatever frame is next sent for
+    # another reason (confirmed on real hardware).
+    internal_clean:
+      name: 'Internal clean'
+    # Powerful (boost) mode, a persistent flag in the state frame (not a
+    # stateless toggle like fujitsu-264's toggle_powerful()). Transmits
+    # immediately. Component default when undeclared: off.
+    powerful:
+      name: 'Powerful'
+    # 電流切換 (current limit): ON = limit max operating current to ~10A
+    # ("小", for weaker household breakers), OFF = normal ~15A ("通常").
+    # Transmits immediately. Component default when undeclared: off (normal).
+    current_cut:
+      name: 'Current cut'
+```
+
+`set_isee()`/`get_isee()` (a thin wrapper around the underlying library's own `setISee()`/`getISee()`, not exposed as an entity) is also available for advanced lambda use — combining a plain Cool mode call with `set_isee(false)` reproduces the remote's own Cool+ISee-off "weak cool" preset button.
+
+```yaml
+button:
+  - platform: template
+    name: 'Weak cool preset'
+    on_press:
+      then:
+        - climate.control:
+            id: my_climate
+            mode: COOL
+        - lambda: |-
+            id(my_climate).set_isee(false);
+```
+
+#### Receive mode
+
+Receive sync is implemented only for `model: MITSUBISHI_AC` (the model this was verified against on real hardware); other models' `update_from_raw()`/`update_from_aeha()` return `false` immediately. It's wired up automatically by `on_receive()` once `receiver_id:` is set on the `climate:` block (see [Receive mode](#receive-mode-syncing-from-a-physical-remote) above) — no YAML lambda required. Two things get decoded:
+
+- `update_from_raw(pulses)`: the main 18-byte state frame (mode, target temperature, fan speed 1/2/3/auto/quiet, both swing axes and the vertical vane position, dry level while in dry mode, internal clean, powerful, current cut), decoded from raw pulses via the shared `decode_pulses()` helper (this protocol has no ESPHome built-in decoder).
+- `update_from_aeha(address, data)`: this remote also sends short AEHA-timed side-channel toggle codes (dry-level cycle button, internal-clean button) separately from the main state frame, at a dedicated address (`0xC4D3`). Unlike fujitsu-264, this address does **not** need bit-reversal.
+
+Dry level is only synced from either source while the unit is currently in dry mode — the same byte/nibble carries unrelated, mode-correlated noise in other modes (observed on real hardware: reads as "weak" in Cool, "strong" in Heat).
+
+**Verified hardware:** living-room MSZ-series unit (2026-07).
 
 ## Changelog
 
-- **2026.07.09**: Move receive-sync helpers (`reverse_bits8()`/`reverse_bits16()`, `rx_locked_out()`, `decode_pulses()`) onto `ir_remote_base::IrRemoteBase` so other platforms can share them when adding receive mode; refactor fujitsu-264 to use the shared helpers (no behavior change)
+- **2026.07.12**: Add receive mode (`update_from_aeha()`/`update_from_raw()` via `receiver_id:`) to `fujitsu` (legacy), `panasonic`, `electra` and `sharp` — compile-tested only, unverified on real hardware. Release `v2026.07`.
+- **2026.07.11**: Move receive-sync from YAML `on_aeha:`/`on_raw:` lambdas into each climate's own `on_receive()` override, enabled by a `receiver_id:` on the `climate:` block (no lambda needed any more); turn `select`/`switch`/`number` entities into native, opt-in ESPHome sub-platforms on fujitsu-264 and mitsubishi (`weak_dry`/`vertical_angle`/`horizontal_angle`/`temp_auto_offset`/`internal_clean` and `dry_level`/`vertical_vane`/`internal_clean`/`powerful`/`current_cut` respectively), replacing the old `platform: template` + lambda pattern; un-invert the Internal Clean switch (ON now means enabled, default ON, persisted across reboots); pin the shared `ir_remote_base` loader's `IRremoteESP8266` version to `2.9.0`.
+- **2026.07.09**: Move receive-sync helpers (`reverse_bits8()`/`reverse_bits16()`, `rx_locked_out()`, `decode_pulses()`) onto `ir_remote_base::IrRemoteBase` so other platforms can share them when adding receive mode; refactor fujitsu-264 to use the shared helpers (no behavior change); add receive mode, `set_clean()`/`set_dry_level()`/`set_vertical_vane()`/`set_powerful()`/`set_current_cut()`/`set_isee()`, and model-restriction options (`supports_auto`/`supports_fan_only`/`horizontal_swing`/`supports_quiet_fan`) to the mitsubishi platform, verified on a living-room MSZ-series unit
 - **2026.07.08**: Add receive mode to fujitsu-264 platform (`update_from_aeha()`, syncs climate/select/switch/number state from frames sent by the physical remote), `set_temp_auto_offset()` (auto-mode temperature adjustment), `set_vertical_angle()`/`set_horizontal_angle()` (fixed louver position, 1-8/1-5), `CLIMATE_SWING_HORIZONTAL`/`CLIMATE_SWING_BOTH` support, and custom fan-speed labels (自動/静音/微風/弱風/強風); all verified with `AR-RLB1J` remote
 - **2026.07.06**: Add `set_clean()`, `toggle_sterilization()` and `set_weak_dry()` methods to fujitsu-264 platform, verified with `AR-RLB1J` remote
 

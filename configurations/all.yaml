@@ -16,31 +16,43 @@ remote_transmitter:
   pin: 4
   carrier_duty_percent: 50%
 
+remote_receiver:
+  id: ir_receiver
+  pin: 5
+  dump: []
+
 climate:
   - platform: electra
     id: my_electra
     name: 'Electra'
+    receiver_id: ir_receiver
 
   - platform: fujitsu
     id: my_fujitsu
     model: ARREB1E
     horizontal_swing: false
     name: 'Fujitsu'
+    receiver_id: ir_receiver
 
   - platform: panasonic
     id: my_panasonic
     model: DKE
     name: 'Panasonic'
+    receiver_id: ir_receiver
 
   - platform: sharp
     id: my_sharp
     model: A705
     name: 'Sharp'
+    receiver_id: ir_receiver
 
   - platform: mitsubishi
     id: my_mitsubishi_ac
     model: MITSUBISHI_AC
     name: 'Mitsubishi AC'
+    # Receive sync (update_from_raw/update_from_aeha) is only implemented for
+    # this MITSUBISHI_AC instance, not the 136/112 ones below.
+    receiver_id: ir_receiver
 
   - platform: mitsubishi
     id: my_mitsubishi_136
@@ -51,6 +63,27 @@ climate:
     id: my_mitsubishi_112
     model: MITSUBISHI112
     name: 'Mitsubishi 112'
+
+# Native select/switch sub-platforms for the MITSUBISHI_AC instance above.
+# mitsubishi_id: must point at it explicitly -- there are three mitsubishi
+# climate instances in this file (AC/136/112) and it is not auto-resolved.
+select:
+  - platform: mitsubishi
+    mitsubishi_id: my_mitsubishi_ac
+    dry_level:
+      name: 'Mitsubishi AC dry level'
+    vertical_vane:
+      name: 'Mitsubishi AC vertical vane'
+
+switch:
+  - platform: mitsubishi
+    mitsubishi_id: my_mitsubishi_ac
+    internal_clean:
+      name: 'Mitsubishi AC internal clean'
+    powerful:
+      name: 'Mitsubishi AC powerful'
+    current_cut:
+      name: 'Mitsubishi AC current cut'
 
 button:
   - platform: template
