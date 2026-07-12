@@ -24,7 +24,7 @@ esp32:
 external_components:
   - source:
       type: git
-      url: https://github.com/mistic100/ESPHome-IRremoteESP8266
+      url: https://github.com/yoshikik1991/ESPHome-IRremoteESP8266
     components: [ ir_remote_base, <platform_name> ]
 
 remote_transmitter:
@@ -76,7 +76,14 @@ Add a `receiver_id:` pointing at your `remote_receiver` to the `climate:` block.
 ```yaml
 remote_receiver:
   id: my_receiver
-  pin: GPIOXX
+  pin:
+    number: GPIOXX
+    # Most IR receiver modules (e.g. TSOP-series) output an active-low
+    # signal, so `inverted: true` is the common case, not the exception.
+    # `INPUT_PULLUP` isn't always necessary (depends on the specific
+    # receiver module) but is a safe default.
+    inverted: true
+    mode: INPUT_PULLUP
   dump: []
   # ESP32-S3 only decodes short frames without this — see note below.
   use_dma: true

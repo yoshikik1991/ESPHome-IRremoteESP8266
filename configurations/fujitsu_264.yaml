@@ -23,7 +23,9 @@ remote_transmitter:
 # need use_dma: true plus rmt_symbols/receive_symbols: 512 (see README).
 remote_receiver:
   id: ir_receiver
-  pin: 5
+  pin:
+    number: 5
+    inverted: true
   dump: []
 
 climate:

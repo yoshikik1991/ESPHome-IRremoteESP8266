@@ -18,7 +18,9 @@ remote_transmitter:
 
 remote_receiver:
   id: ir_receiver
-  pin: 5
+  pin:
+    number: 5
+    inverted: true
   dump: []
 
 climate:
