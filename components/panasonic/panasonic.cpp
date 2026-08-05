@@ -303,5 +303,67 @@ namespace esphome
             return true;
         }
 
+        void PanasonicClimate::apply_batch(optional<climate::ClimateMode> mode,
+                                            optional<float> target_temperature,
+                                            optional<climate::ClimateFanMode> fan_mode,
+                                            optional<climate::ClimateSwingMode> swing_mode)
+        {
+            auto traits = this->traits();
+            bool changed = false;
+
+            if (mode.has_value())
+            {
+                if (traits.supports_mode(*mode))
+                {
+                    this->mode = *mode;
+                    changed = true;
+                }
+                else
+                {
+                    ESP_LOGW(TAG, "apply_batch: mode %d not supported by this unit, ignoring", (int)*mode);
+                }
+            }
+            if (target_temperature.has_value())
+            {
+                this->target_temperature =
+                    clamp(*target_temperature, traits.get_visual_min_temperature(), traits.get_visual_max_temperature());
+                changed = true;
+            }
+            if (fan_mode.has_value())
+            {
+                if (traits.supports_fan_mode(*fan_mode))
+                {
+                    this->fan_mode = *fan_mode;
+                    changed = true;
+                }
+                else
+                {
+                    ESP_LOGW(TAG, "apply_batch: fan_mode %d not supported by this unit, ignoring", (int)*fan_mode);
+                }
+            }
+            if (swing_mode.has_value())
+            {
+                if (traits.supports_swing_mode(*swing_mode))
+                {
+                    this->swing_mode = *swing_mode;
+                    changed = true;
+                }
+                else
+                {
+                    ESP_LOGW(TAG, "apply_batch: swing_mode %d not supported by this unit, ignoring", (int)*swing_mode);
+                }
+            }
+
+            if (!changed)
+            {
+                ESP_LOGW(TAG, "apply_batch: no valid fields, nothing to send");
+                return;
+            }
+
+            ESP_LOGI(TAG, "Applying batch climate command");
+            this->transmit_state();
+            this->publish_state();
+        }
+
     } // namespace panasonic_general
 } // namespace esphome

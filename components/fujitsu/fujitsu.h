@@ -74,6 +74,30 @@ namespace esphome
             /// Returns true if state was updated.
             bool update_from_aeha(const uint16_t raw_address, const std::vector<uint8_t> &raw_data);
 
+            /// Batch-apply any combination of the standard climate fields from
+            /// a single command, then transmit at most once. Fields left as
+            /// nullopt keep their current value. mode/fan_mode/swing_mode are
+            /// validated against this->traits() (an unsupported value is
+            /// logged and that field alone is skipped; other fields still
+            /// apply) -- this naturally respects the model-dependent
+            /// horizontal-swing restriction traits() already applies above.
+            /// target_temperature is clamped to the traits' visual min/max
+            /// rather than rejected. Deliberately does NOT accept a preset:
+            /// Eco/Powerful are sent as their own separate toggle-command
+            /// frames (toggle_econo()/toggle_powerful(), each self-transmitting
+            /// immediately) distinct from the main mode/temp/fan/swing state
+            /// frame -- the hardware has no single frame that can carry both,
+            /// so folding a preset change into this batch would still cost a
+            /// second transmission regardless (control()'s own preset handling
+            /// has this same two-frame cost). Call toggle_econo()/
+            /// toggle_powerful() directly for those. UNVERIFIED on real
+            /// hardware -- compile-tested only, mirroring the verified
+            /// fujitsu_264/mitsubishi apply_batch().
+            void apply_batch(optional<climate::ClimateMode> mode,
+                              optional<float> target_temperature,
+                              optional<climate::ClimateFanMode> fan_mode,
+                              optional<climate::ClimateSwingMode> swing_mode);
+
         protected:
             void transmit_state() override;
             void control(const climate::ClimateCall &call) override;

@@ -5,6 +5,7 @@
 #include "esphome/core/log.h"
 #include "esphome/core/component.h"
 #include "esphome/core/automation.h"
+#include "esphome/core/optional.h"
 #include "esphome/components/ir_remote_base/ir_remote_base.h"
 #include "ir_Panasonic.h"
 
@@ -52,6 +53,23 @@ namespace esphome
             /// mirroring the verified fujitsu_264/mitsubishi receive paths.
             /// Returns true if state was updated.
             bool update_from_aeha(const uint16_t raw_address, const std::vector<uint8_t> &raw_data);
+
+            /// Batch-apply any combination of the standard climate fields from
+            /// a single command, then transmit at most once. Fields left as
+            /// nullopt keep their current value. mode/fan_mode/swing_mode are
+            /// validated against this->traits() (an unsupported value is
+            /// logged and that field alone is skipped; other fields still
+            /// apply) -- this naturally respects the model-dependent
+            /// horizontal-swing restriction traits() already applies above.
+            /// target_temperature is clamped to the traits' visual min/max
+            /// rather than rejected. This component has no extra entities/
+            /// fields beyond the standard ones, unlike mitsubishi/fujitsu_264.
+            /// UNVERIFIED on real hardware -- compile-tested only, mirroring
+            /// the verified fujitsu_264/mitsubishi apply_batch().
+            void apply_batch(optional<climate::ClimateMode> mode,
+                              optional<float> target_temperature,
+                              optional<climate::ClimateFanMode> fan_mode,
+                              optional<climate::ClimateSwingMode> swing_mode);
 
         protected:
             void transmit_state() override;

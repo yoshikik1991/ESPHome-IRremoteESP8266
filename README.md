@@ -6,6 +6,8 @@ For now only some protocols are implemented, please open an issue or an PR to ad
 
 Most platforms are transmit-only, but every platform on this fork can also **receive**: it can decode frames sent by the physical remote (captured via ESPHome's `remote_receiver`) and sync the climate entity's (and any related `select`/`switch`/`number` entity's) state to match. Two platforms (`fujitsu-264`, `mitsubishi`) are verified against real hardware; the rest are compile-tested only. See the [verification status table](#receive-mode-syncing-from-a-physical-remote) below before relying on receive mode for a platform other than those two.
 
+Every platform also exposes `apply_batch(...)`: apply any combination of climate fields (mode/temperature/fan/swing, plus platform-specific extras) from a single call and transmit **at most once**, regardless of how many fields changed — useful when driving the climate from something other than ESPHome's own API (e.g. an MQTT subscription), where the caller would otherwise have to make several separate calls that each transmit their own IR frame. See [Batch commands](#batch-commands-single-transmission-multi-field-updates) below.
+
 **Supported platforms:**
 - [fujitsu](#fujitsu)
 - [fujitsu-264](#fujitsu-264)
@@ -114,6 +116,56 @@ Internally, each platform's `on_receive()` runs ESPHome's own `AEHAProtocol` dec
 >
 > That's not the only loop to worry about, though: native `select`/`number`/`switch` sub-entities are opt-in child components that a platform's `update_from_*()` calls `publish_state()` on directly (see each platform's section below) — they no longer route back through a YAML `on_value`/`on_press` automation, so the classic "receive → publish_state → on_value → retransmit → picked back up by the receiver → repeat" loop is now structurally prevented for the entities that ship with a platform. Setters still keep a value-only no-op guard (skip if the new value equals the current one) anyway, both as a second line of defense and to avoid redundant retransmits when a sync republishes an unchanged value.
 
+## Batch commands (single-transmission multi-field updates)
+
+By default, ESPHome only batches whatever attributes arrive together in a single `ClimateCall` (i.e. one API `ClimateCommandRequest`) into one IR transmission — `climate_ir::ClimateIR::control()` already applies every field present in *that one call* before transmitting once. The problem is upstream of that: if the caller (e.g. Home Assistant) issues several separate service calls for what a user thinks of as one change (`climate.set_hvac_mode`, then `climate.set_temperature`, then `climate.set_fan_mode`, ...), each separate call is its own `ClimateCall` and still transmits its own IR frame — so the unit can end up beeping several times for one logical change.
+
+Every platform on this fork exposes an `apply_batch(...)` method that takes the same fields a `ClimateCall` would (`mode`/`target_temperature`/`fan_mode`/`swing_mode`, plus any platform-specific extras — see each platform's own section below) as `optional<T>` arguments, applies whichever ones are provided to internal state, and transmits **at most once** no matter how many fields were included. Fields left as `nullopt` keep their current value. `mode`/`fan_mode`/`swing_mode` (`custom_fan_mode` on `fujitsu-264`) are validated against `this->traits()` — an unsupported value is logged (`ESP_LOGW`) and only that one field is skipped, the rest of the batch still applies and transmits normally. `target_temperature` (and any platform-specific numeric field) is clamped to its valid range rather than rejected.
+
+This is meant to be driven from outside ESPHome's own climate API — typically an MQTT subscription whose handler parses a single JSON payload into the matching `optional<T>` arguments and calls `apply_batch(...)` once — rather than as a replacement for the normal `climate:`/`select:`/`switch:`/`number:` entities, which are unaffected and still transmit immediately on their own when changed individually through Home Assistant.
+
+### Verification status
+
+| Platform | `apply_batch()` | Verified on |
+|---|---|---|
+| `fujitsu-264` | yes | Real hardware — bedroom unit (2026-08-05) |
+| `mitsubishi` | yes (model `MITSUBISHI_AC` only, matching receive mode) | Real hardware — living-room and workshop MSZ-series units (2026-08-05) |
+| `fujitsu` (legacy) | yes | Compile-tested only — **unverified** on real hardware |
+| `panasonic` | yes | Compile-tested only — **unverified** on real hardware |
+| `electra` | yes | Compile-tested only — **unverified** on real hardware |
+| `sharp` | yes | Compile-tested only — **unverified** on real hardware |
+
+As with receive mode, the four "compile-tested only" platforms mirror the two verified platforms' `apply_batch()` shape (same field validation/clamping approach) without a physical unit to confirm against.
+
+### Standard fields
+
+Every platform accepts at least these four; see each platform's own section for its exact signature (order matters — arguments are positional) and any extras:
+
+| Field | Type | Notes |
+|---|---|---|
+| `mode` | `optional<climate::ClimateMode>` | Validated against `traits().supports_mode()` |
+| `target_temperature` | `optional<float>` | Clamped to `traits().get_visual_min_temperature()`/`get_visual_max_temperature()` |
+| `fan_mode` | `optional<climate::ClimateFanMode>` | Validated against `traits().supports_fan_mode()`. `fujitsu-264` takes `optional<std::string> custom_fan_mode` instead — see its own section |
+| `swing_mode` | `optional<climate::ClimateSwingMode>` | Validated against `traits().supports_swing_mode()` |
+
+> [!NOTE]
+> Preset/toggle-style commands (fujitsu legacy's Eco/Powerful presets, fujitsu-264's `toggle_powerful()`/`toggle_sterilization()`) are deliberately **not** part of `apply_batch()` on any platform. Each is sent as its own separate command frame, distinct from the main mode/temp/fan/swing state frame the hardware understands — folding one into the batch wouldn't save a transmission anyway, since the unit has no single frame that carries both. Call those methods directly instead.
+
+### Example
+
+```yaml
+button:
+  - platform: template
+    name: 'Batch example'
+    on_press:
+      then:
+        - lambda: |-
+            id(my_climate).apply_batch(climate::CLIMATE_MODE_COOL, 24.0f,
+                                        climate::CLIMATE_FAN_HIGH, climate::CLIMATE_SWING_VERTICAL);
+```
+
+A more realistic use is an MQTT `subscribe_json()` handler that parses per-field JSON keys into the matching `optional<T>` arguments (leaving absent keys as `nullopt`) and calls `apply_batch(...)` once per message — see `configurations/all.yaml` for a compile-tested call against each platform, and the fork's own downstream smart-hub devices for a full MQTT-driven example.
+
 ## fujitsu
 
 ```yaml
@@ -174,6 +226,10 @@ button:
 Supported via `receiver_id:` on the `climate:` block (see [Receive mode](#receive-mode-syncing-from-a-physical-remote) above). **Compile-tested only, unverified on real hardware** — no physical unit of this legacy protocol family was available; `update_from_aeha()` was implemented by mirroring fujitsu-264's own verified receive path (it shares the same `0x14 0x63` vendor header and LSB-first-on-the-wire convention).
 
 Only the `ARRAH2E`-family long (16-byte) and short (7-byte) code lengths are recognized — `ARDB1`/`ARJW2`'s one-byte-shorter long/short codes aren't handled. Short frames other than power-off (econo/powerful toggles, step-vane commands) carry no absolute mode/temp/fan/swing payload and are only logged (`ESP_LOGD`), not synced onto the climate entity.
+
+#### Batch commands
+
+`apply_batch(mode, target_temperature, fan_mode, swing_mode)` — see [Batch commands](#batch-commands-single-transmission-multi-field-updates) above for the general shape. Just the four standard fields; does **not** accept a preset (Eco/Powerful) — call `toggle_econo()`/`toggle_powerful()` directly for those, same reasoning as the note above. **Compile-tested only, unverified on real hardware.**
 
 ## fujitsu-264
 
@@ -301,6 +357,27 @@ button:
 
 **Verified remotes:** `AR-RLB1J`.
 
+#### Batch commands
+
+```cpp
+void apply_batch(optional<climate::ClimateMode> mode,
+                  optional<float> target_temperature,
+                  optional<std::string> custom_fan_mode,
+                  optional<climate::ClimateSwingMode> swing_mode,
+                  optional<uint8_t> vertical_angle,
+                  optional<uint8_t> horizontal_angle,
+                  optional<bool> weak_dry,
+                  optional<float> temp_auto_offset,
+                  optional<bool> clean);
+```
+
+See [Batch commands](#batch-commands-single-transmission-multi-field-updates) above for the general shape. Takes `custom_fan_mode` (a `std::string` matching one of 自動/静音/微風/弱風/強風, validated via the protected `find_custom_fan_mode_()` rather than `traits()` — see the note below) instead of a `fan_mode` enum, plus this platform's own extras: `vertical_angle`/`horizontal_angle` (same 1-8/1-5 ranges as their selects, clamped), `weak_dry` (same as the `weak_dry` select, but does **not** auto-switch into dry mode the way the select's `on_value` handler does — include `mode: dry` in the same batch for that), and `temp_auto_offset` (clamped to -2.0..+2.0). Does not accept `toggle_powerful()`/`toggle_sterilization()` — see the note above.
+
+> [!NOTE]
+> `custom_fan_mode` validation can't reuse `traits().supports_custom_fan_mode()` the way `mode`/`swing_mode` reuse `traits().supports_mode()`/`supports_swing_mode()`: `ClimateIR::traits()` (unmodified by this platform) never populates custom fan modes onto the `ClimateTraits` object it returns — that accessor only serves an unrelated, mostly-deprecated path. The actual supported list set by this platform's constructor lives on the `Climate` object itself, so `apply_batch()` checks it via the protected `find_custom_fan_mode_()` instead (same as `Climate::set_custom_fan_mode_()` does internally). This was caught during real-hardware verification: an earlier version of this method used `traits().supports_custom_fan_mode()` and rejected every custom fan mode as "unsupported" even though all five are registered.
+
+**Verified on real hardware** (bedroom unit, 2026-08-05) — including the custom_fan_mode fix above.
+
 ## panasonic
 
 ```yaml
@@ -315,6 +392,10 @@ climate:
 Supported via `receiver_id:` on the `climate:` block (see [Receive mode](#receive-mode-syncing-from-a-physical-remote) above). **Compile-tested only, unverified on real hardware** — no physical unit was available; `update_from_aeha()` was implemented by mirroring fujitsu-264's own verified receive path, on the (unverified) assumption this protocol is also LSB-first on the wire.
 
 This protocol's real frame is 2 AEHA sections (8 bytes + 19 bytes) separated by a gap that normally splits them into separate receive events at `remote_receiver`'s default idle threshold. `update_from_aeha()` handles all three shapes it might see: a lone 8-byte section 1 carries no climate state and is just logged; a lone 19-byte section 2 has the constant 8-byte section-1 prefix prepended before use; a 27-byte frame (both sections decoded as one, e.g. with a shorter idle threshold) is used directly.
+
+#### Batch commands
+
+`apply_batch(mode, target_temperature, fan_mode, swing_mode)` — see [Batch commands](#batch-commands-single-transmission-multi-field-updates) above. Just the four standard fields; `swing_mode`/`mode` validation naturally respects this platform's model-dependent horizontal-swing restriction (see `traits()` above) since it's checked dynamically. **Compile-tested only, unverified on real hardware.**
 
 ## electra
 
@@ -332,6 +413,10 @@ Supported via `receiver_id:` on the `climate:` block (see [Receive mode](#receiv
 
 This protocol has no ESPHome built-in decoder and isn't AEHA-timed (its leader is 9166/4470 µs vs. AEHA's 3400/1700 µs), so it's decoded from raw pulses via the shared `decode_pulses()` helper instead of the AEHA path. Electra frames may arrive with repeats; `decode_pulses()` stops at the first pulse pair that doesn't fit the expected bit timing, so a single clean frame is what's expected.
 
+#### Batch commands
+
+`apply_batch(mode, target_temperature, fan_mode, swing_mode)` — see [Batch commands](#batch-commands-single-transmission-multi-field-updates) above. Just the four standard fields; no platform-specific extras. **Compile-tested only, unverified on real hardware.**
+
 ## sharp
 
 ```yaml
@@ -346,6 +431,10 @@ climate:
 Supported via `receiver_id:` on the `climate:` block (see [Receive mode](#receive-mode-syncing-from-a-physical-remote) above). **Compile-tested only, unverified on real hardware** — no physical unit was available; `update_from_raw()` was implemented by mirroring mitsubishi's own verified raw-pulse receive path.
 
 Same reasoning as electra: no ESPHome built-in decoder and not AEHA-timed (leader 3800/1900 µs), so it's decoded from raw pulses via `decode_pulses()`.
+
+#### Batch commands
+
+`apply_batch(mode, target_temperature, fan_mode, swing_mode)` — see [Batch commands](#batch-commands-single-transmission-multi-field-updates) above. Just the four standard fields; no platform-specific extras. **Compile-tested only, unverified on real hardware.**
 
 ## mitsubishi
 
@@ -444,8 +533,27 @@ Dry level is only synced from either source while the unit is currently in dry m
 
 **Verified hardware:** living-room MSZ-series unit (2026-07).
 
+#### Batch commands
+
+```cpp
+void apply_batch(optional<climate::ClimateMode> mode,
+                  optional<float> target_temperature,
+                  optional<climate::ClimateFanMode> fan_mode,
+                  optional<climate::ClimateSwingMode> swing_mode,
+                  optional<uint8_t> vertical_vane,
+                  optional<uint8_t> dry_level,
+                  optional<bool> powerful,
+                  optional<bool> current_cut,
+                  optional<bool> clean);
+```
+
+See [Batch commands](#batch-commands-single-transmission-multi-field-updates) above for the general shape. Plus this platform's own extras: `vertical_vane`/`dry_level` (same 0-5/0-2 ranges as their selects, clamped) and `powerful`/`current_cut`/`clean` (same as their switches). `dry_level` does **not** auto-switch into dry mode the way the select's `on_value` handler does — include `mode: dry` in the same batch for that.
+
+**Verified on real hardware** (living-room and workshop units, 2026-08-05).
+
 ## Changelog
 
+- **2026.08.05**: Add `apply_batch()` to every platform (`mitsubishi`, `fujitsu-264`, `fujitsu` (legacy), `panasonic`, `electra`, `sharp`) — applies any combination of the standard climate fields (plus platform-specific extras on `mitsubishi`/`fujitsu-264`) from a single call and transmits at most once, no matter how many fields changed. Intended to be driven by something other than ESPHome's own climate API (e.g. an MQTT subscription), where the caller would otherwise make several separate calls that each transmit their own IR frame. `mitsubishi`/`fujitsu-264` verified on real hardware (living-room, workshop and bedroom units); the other four platforms are compile-tested only, mirroring the same field-validation/clamping approach. Also fixes a `fujitsu-264` `apply_batch()` bug found during that verification: `custom_fan_mode` validation checked `traits().supports_custom_fan_mode()`, which this platform never populates (custom fan modes live on the `Climate` object itself, not on the `ClimateTraits` value `traits()` returns) and so always returned false, rejecting every custom fan mode as unsupported — switched to the correct `find_custom_fan_mode_()` check.
 - **2026.07.12**: Add receive mode (`update_from_aeha()`/`update_from_raw()` via `receiver_id:`) to `fujitsu` (legacy), `panasonic`, `electra` and `sharp` — compile-tested only, unverified on real hardware. Release `v2026.07`.
 - **2026.07.11**: Move receive-sync from YAML `on_aeha:`/`on_raw:` lambdas into each climate's own `on_receive()` override, enabled by a `receiver_id:` on the `climate:` block (no lambda needed any more); turn `select`/`switch`/`number` entities into native, opt-in ESPHome sub-platforms on fujitsu-264 and mitsubishi (`weak_dry`/`vertical_angle`/`horizontal_angle`/`temp_auto_offset`/`internal_clean` and `dry_level`/`vertical_vane`/`internal_clean`/`powerful`/`current_cut` respectively), replacing the old `platform: template` + lambda pattern; un-invert the Internal Clean switch (ON now means enabled, default ON, persisted across reboots); pin the shared `ir_remote_base` loader's `IRremoteESP8266` version to `2.9.0`.
 - **2026.07.09**: Move receive-sync helpers (`reverse_bits8()`/`reverse_bits16()`, `rx_locked_out()`, `decode_pulses()`) onto `ir_remote_base::IrRemoteBase` so other platforms can share them when adding receive mode; refactor fujitsu-264 to use the shared helpers (no behavior change); add receive mode, `set_clean()`/`set_dry_level()`/`set_vertical_vane()`/`set_powerful()`/`set_current_cut()`/`set_isee()`, and model-restriction options (`supports_auto`/`supports_fan_only`/`horizontal_swing`/`supports_quiet_fan`) to the mitsubishi platform, verified on a living-room MSZ-series unit

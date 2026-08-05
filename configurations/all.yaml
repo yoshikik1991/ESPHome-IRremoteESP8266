@@ -108,3 +108,38 @@ button:
       then:
         - lambda: |-
             id(my_fujitsu).toggle_powerful();
+
+  # Compile-only smoke test for the new apply_batch() on each of the
+  # unverified-on-hardware components (electra/fujitsu/panasonic/sharp),
+  # mirroring the verified fujitsu_264/mitsubishi apply_batch() call shape.
+  - platform: template
+    name: 'Electra Apply batch test'
+    on_press:
+      then:
+        - lambda: |-
+            id(my_electra).apply_batch(climate::CLIMATE_MODE_COOL, 24.0f,
+                                        climate::CLIMATE_FAN_HIGH, climate::CLIMATE_SWING_VERTICAL);
+
+  - platform: template
+    name: 'Fujitsu Apply batch test'
+    on_press:
+      then:
+        - lambda: |-
+            id(my_fujitsu).apply_batch(climate::CLIMATE_MODE_COOL, 24.0f,
+                                        climate::CLIMATE_FAN_HIGH, climate::CLIMATE_SWING_VERTICAL);
+
+  - platform: template
+    name: 'Panasonic Apply batch test'
+    on_press:
+      then:
+        - lambda: |-
+            id(my_panasonic).apply_batch(climate::CLIMATE_MODE_COOL, 24.0f,
+                                          climate::CLIMATE_FAN_HIGH, climate::CLIMATE_SWING_VERTICAL);
+
+  - platform: template
+    name: 'Sharp Apply batch test'
+    on_press:
+      then:
+        - lambda: |-
+            id(my_sharp).apply_batch(climate::CLIMATE_MODE_COOL, 24.0f,
+                                      climate::CLIMATE_FAN_HIGH, climate::CLIMATE_SWING_VERTICAL);

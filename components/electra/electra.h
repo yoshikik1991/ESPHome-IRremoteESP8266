@@ -5,6 +5,7 @@
 #include "esphome/core/log.h"
 #include "esphome/core/component.h"
 #include "esphome/core/automation.h"
+#include "esphome/core/optional.h"
 #include "esphome/components/ir_remote_base/ir_remote_base.h"
 #include "ir_Electra.h"
 
@@ -38,6 +39,25 @@ namespace esphome
             /// mirroring the verified fujitsu_264/mitsubishi receive paths.
             /// Returns true if a valid frame was decoded and applied.
             bool update_from_raw(const std::vector<int32_t> &pulses);
+
+            /// Batch-apply any combination of the standard climate fields from
+            /// a single command, then transmit at most once. Unlike a normal
+            /// climate control() call -- which already batches everything
+            /// within one ClimateCall into a single transmit_state() -- this
+            /// exists so an MQTT batch-command handler doesn't need to build a
+            /// full ClimateCall just to reuse that batching. Fields left as
+            /// nullopt keep their current value. mode/fan_mode/swing_mode are
+            /// validated against this->traits() (an unsupported value is
+            /// logged and that field alone is skipped; other fields still
+            /// apply); target_temperature is clamped to the traits' visual
+            /// min/max rather than rejected. This component has no extra
+            /// entities/fields beyond the standard ones, unlike mitsubishi/
+            /// fujitsu_264. UNVERIFIED on real hardware -- compile-tested
+            /// only, mirroring the verified fujitsu_264/mitsubishi apply_batch().
+            void apply_batch(optional<climate::ClimateMode> mode,
+                              optional<float> target_temperature,
+                              optional<climate::ClimateFanMode> fan_mode,
+                              optional<climate::ClimateSwingMode> swing_mode);
 
         protected:
             void transmit_state() override;
