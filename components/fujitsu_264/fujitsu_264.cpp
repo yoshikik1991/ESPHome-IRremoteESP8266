@@ -267,7 +267,17 @@ namespace esphome
             }
             if (custom_fan_mode.has_value())
             {
-                if (traits.supports_custom_fan_mode(*custom_fan_mode))
+                // NOTE: custom fan modes are NOT tracked on the ClimateTraits
+                // object returned by traits() -- ClimateIR::traits() (this
+                // component doesn't override it) never calls
+                // set_supported_custom_fan_modes() on it, so
+                // traits.supports_custom_fan_mode() always returns false here
+                // regardless of the constructor's set_supported_custom_fan_modes()
+                // call. The actual supported list lives on the Climate object
+                // itself and is checked via the protected find_custom_fan_mode_()
+                // (see Climate::find_custom_fan_mode_() / set_custom_fan_mode_()
+                // in esphome/components/climate/climate.cpp).
+                if (this->find_custom_fan_mode_(custom_fan_mode->c_str()) != nullptr)
                 {
                     this->set_custom_fan_mode_(custom_fan_mode->c_str());
                     changed = true;
