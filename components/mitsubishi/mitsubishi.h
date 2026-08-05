@@ -96,6 +96,28 @@ namespace esphome
             void set_current_cut(const bool current_cut);
             bool get_current_cut() const { return this->current_cut_; }
 
+            /// Batch-apply any combination of standard climate fields and this
+            /// unit's own extras (vertical vane, dry level, powerful, current
+            /// cut, clean) from a single command, then transmit at most once.
+            /// Unlike calling the individual set_*()/climate control APIs
+            /// back-to-back -- each of which transmits immediately on its own
+            /// -- this collects every provided field into internal state
+            /// first. Fields left as nullopt keep their current value.
+            /// mode/fan_mode/swing_mode are validated against this->traits()
+            /// (an unsupported value is logged and that field alone is
+            /// skipped; other fields still apply); target_temperature is
+            /// clamped to the traits' visual min/max rather than rejected.
+            /// Intended for the MQTT batch-command topic.
+            void apply_batch(optional<climate::ClimateMode> mode,
+                              optional<float> target_temperature,
+                              optional<climate::ClimateFanMode> fan_mode,
+                              optional<climate::ClimateSwingMode> swing_mode,
+                              optional<uint8_t> vertical_vane,
+                              optional<uint8_t> dry_level,
+                              optional<bool> powerful,
+                              optional<bool> current_cut,
+                              optional<bool> clean);
+
             /// Sync state from a frame captured by ESPHome's built-in on_raw
             /// pulse dump (this protocol has no ESPHome built-in decoder, unlike
             /// fujitsu_264's on_aeha). Only implemented for Model::MITSUBISHI_AC.

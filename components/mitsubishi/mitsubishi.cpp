@@ -660,6 +660,123 @@ namespace esphome
             this->transmit_state();
         }
 
+        void MitsubishiClimate::apply_batch(optional<climate::ClimateMode> mode,
+                                             optional<float> target_temperature,
+                                             optional<climate::ClimateFanMode> fan_mode,
+                                             optional<climate::ClimateSwingMode> swing_mode,
+                                             optional<uint8_t> vertical_vane,
+                                             optional<uint8_t> dry_level,
+                                             optional<bool> powerful,
+                                             optional<bool> current_cut,
+                                             optional<bool> clean)
+        {
+            // For an MQTT batch command, "set exactly this state" is the
+            // intent -- deliberately does NOT replicate set_dry_level()'s
+            // auto-switch-to-DRY convenience (that's for the standalone
+            // select, where there's no other way to express "and change
+            // mode too" in the same interaction). Include "mode": "dry" in
+            // the payload for that.
+            auto traits = this->traits();
+            bool changed = false;
+
+            if (mode.has_value())
+            {
+                if (traits.supports_mode(*mode))
+                {
+                    this->mode = *mode;
+                    changed = true;
+                }
+                else
+                {
+                    ESP_LOGW(TAG, "apply_batch: mode %d not supported by this unit, ignoring", (int)*mode);
+                }
+            }
+            if (target_temperature.has_value())
+            {
+                // Clamped rather than rejected -- send()/apply_state_ac()
+                // would clamp the physical frame to the library's own
+                // kMitsubishiAcMinTemp/MaxTemp range regardless, but without
+                // this the climate entity's displayed target could sit at an
+                // out-of-range value until the next receive-sync frame.
+                this->target_temperature =
+                    clamp(*target_temperature, traits.get_visual_min_temperature(), traits.get_visual_max_temperature());
+                changed = true;
+            }
+            if (fan_mode.has_value())
+            {
+                if (traits.supports_fan_mode(*fan_mode))
+                {
+                    this->fan_mode = *fan_mode;
+                    changed = true;
+                }
+                else
+                {
+                    ESP_LOGW(TAG, "apply_batch: fan_mode %d not supported by this unit, ignoring", (int)*fan_mode);
+                }
+            }
+            if (swing_mode.has_value())
+            {
+                if (traits.supports_swing_mode(*swing_mode))
+                {
+                    this->swing_mode = *swing_mode;
+                    changed = true;
+                }
+                else
+                {
+                    ESP_LOGW(TAG, "apply_batch: swing_mode %d not supported by this unit, ignoring", (int)*swing_mode);
+                }
+            }
+            if (vertical_vane.has_value())
+            {
+                this->vertical_vane_ = std::min<uint8_t>(*vertical_vane, kMitsubishiAcVaneLowest);
+                changed = true;
+            }
+            if (dry_level.has_value())
+            {
+                this->dry_level_ = std::min<uint8_t>(*dry_level, 2);
+                changed = true;
+            }
+            if (powerful.has_value())
+            {
+                this->powerful_ = *powerful;
+                changed = true;
+            }
+            if (current_cut.has_value())
+            {
+                this->current_cut_ = *current_cut;
+                changed = true;
+            }
+            if (clean.has_value())
+            {
+                this->clean_ = *clean;
+                changed = true;
+            }
+
+            if (!changed)
+            {
+                ESP_LOGW(TAG, "apply_batch: no valid fields, nothing to send");
+                return;
+            }
+
+            ESP_LOGI(TAG, "Applying batch climate command");
+            this->transmit_state();
+            this->publish_state();
+            // Same child-entity publish pattern as update_from_raw(), so
+            // select/switch entities reflect the new state immediately
+            // rather than waiting for the unit's own IR echo to be received
+            // and synced back.
+            if (vertical_vane.has_value() && this->vertical_vane_select_ != nullptr)
+                this->vertical_vane_select_->publish_state(this->vertical_vane_);
+            if (dry_level.has_value() && this->dry_level_select_ != nullptr)
+                this->dry_level_select_->publish_state(this->dry_level_);
+            if (powerful.has_value() && this->powerful_switch_ != nullptr)
+                this->powerful_switch_->publish_state(this->powerful_);
+            if (current_cut.has_value() && this->current_cut_switch_ != nullptr)
+                this->current_cut_switch_->publish_state(this->current_cut_);
+            if (clean.has_value() && this->internal_clean_switch_ != nullptr)
+                this->internal_clean_switch_->publish_state(this->clean_);
+        }
+
         bool MitsubishiClimate::update_from_raw(const std::vector<int32_t> &pulses)
         {
             // Receive sync is only implemented for the 18-byte MITSUBISHI_AC

@@ -1,10 +1,12 @@
 #pragma once
 
+#include <string>
 #include <vector>
 
 #include "esphome/core/log.h"
 #include "esphome/core/component.h"
 #include "esphome/core/automation.h"
+#include "esphome/core/optional.h"
 #include "esphome/components/ir_remote_base/ir_remote_base.h"
 #include "esphome/components/select/select.h"
 #include "esphome/components/switch/switch.h"
@@ -81,6 +83,35 @@ namespace esphome
             /// unverified constructed default.
             void set_clean(const bool clean);
             bool get_clean() const { return this->clean_; }
+
+            /// Batch-apply any combination of standard climate fields and this
+            /// unit's own extras (vertical/horizontal angle, weak dry, auto-mode
+            /// temperature offset, clean) from a single command, then transmit
+            /// at most once. Unlike calling the individual set_*()/climate
+            /// control APIs back-to-back -- each of which transmits immediately
+            /// on its own -- this collects every provided field into internal
+            /// state first. Fields left as nullopt keep their current value.
+            /// mode/custom_fan_mode/swing_mode are validated against
+            /// this->traits() (an unsupported value is logged and that field
+            /// alone is skipped; other fields still apply); target_temperature
+            /// and temp_auto_offset are clamped rather than rejected.
+            /// Deliberately does NOT replicate set_weak_dry()'s auto-switch-to-
+            /// DRY, or set_vertical_angle()/set_horizontal_angle()'s
+            /// auto-stop-swing: this is a "set exactly this state" primitive,
+            /// so include "mode": "dry" / "swing_mode": "off" explicitly in the
+            /// payload for those effects. toggle_powerful()/toggle_sterilization()
+            /// are momentary toggle commands (not persistent state), so they
+            /// stay out of this batch entirely. Intended for the MQTT
+            /// batch-command topic.
+            void apply_batch(optional<climate::ClimateMode> mode,
+                              optional<float> target_temperature,
+                              optional<std::string> custom_fan_mode,
+                              optional<climate::ClimateSwingMode> swing_mode,
+                              optional<uint8_t> vertical_angle,
+                              optional<uint8_t> horizontal_angle,
+                              optional<bool> weak_dry,
+                              optional<float> temp_auto_offset,
+                              optional<bool> clean);
 
             SUB_SELECT(weak_dry)
             SUB_SELECT(vertical_angle)

@@ -229,6 +229,121 @@ namespace esphome
             }
         }
 
+        void Fujitsu264Climate::apply_batch(optional<climate::ClimateMode> mode,
+                                             optional<float> target_temperature,
+                                             optional<std::string> custom_fan_mode,
+                                             optional<climate::ClimateSwingMode> swing_mode,
+                                             optional<uint8_t> vertical_angle,
+                                             optional<uint8_t> horizontal_angle,
+                                             optional<bool> weak_dry,
+                                             optional<float> temp_auto_offset,
+                                             optional<bool> clean)
+        {
+            auto traits = this->traits();
+            bool changed = false;
+
+            if (mode.has_value())
+            {
+                if (traits.supports_mode(*mode))
+                {
+                    this->mode = *mode;
+                    changed = true;
+                }
+                else
+                {
+                    ESP_LOGW(TAG, "apply_batch: mode %d not supported by this unit, ignoring", (int)*mode);
+                }
+            }
+            if (target_temperature.has_value())
+            {
+                // Clamped rather than rejected, same reasoning as mitsubishi's
+                // apply_batch(): apply_state()'s ac_.setTemp() would clamp the
+                // physical frame to the library's own range regardless, but
+                // without this the climate entity's displayed target could sit
+                // at an out-of-range value until the next receive-sync frame.
+                this->target_temperature =
+                    clamp(*target_temperature, traits.get_visual_min_temperature(), traits.get_visual_max_temperature());
+                changed = true;
+            }
+            if (custom_fan_mode.has_value())
+            {
+                if (traits.supports_custom_fan_mode(*custom_fan_mode))
+                {
+                    this->set_custom_fan_mode_(custom_fan_mode->c_str());
+                    changed = true;
+                }
+                else
+                {
+                    ESP_LOGW(TAG, "apply_batch: fan_mode '%s' not supported by this unit, ignoring",
+                             custom_fan_mode->c_str());
+                }
+            }
+            if (swing_mode.has_value())
+            {
+                if (traits.supports_swing_mode(*swing_mode))
+                {
+                    this->swing_mode = *swing_mode;
+                    changed = true;
+                }
+                else
+                {
+                    ESP_LOGW(TAG, "apply_batch: swing_mode %d not supported by this unit, ignoring", (int)*swing_mode);
+                }
+            }
+            // vertical_angle/horizontal_angle deliberately don't stop swing_mode
+            // here, unlike set_vertical_angle()/set_horizontal_angle() -- include
+            // swing_mode explicitly in the same payload for that.
+            if (vertical_angle.has_value())
+            {
+                this->vertical_angle_ = std::min<uint8_t>(std::max<uint8_t>(*vertical_angle, 1), 8);
+                changed = true;
+            }
+            if (horizontal_angle.has_value())
+            {
+                this->horizontal_angle_ = std::min<uint8_t>(std::max<uint8_t>(*horizontal_angle, 1), 5);
+                changed = true;
+            }
+            if (weak_dry.has_value())
+            {
+                this->weak_dry_ = *weak_dry;
+                changed = true;
+            }
+            if (temp_auto_offset.has_value())
+            {
+                this->temp_auto_offset_ = clamp(*temp_auto_offset, -2.0f, 2.0f);
+                changed = true;
+            }
+            if (clean.has_value())
+            {
+                this->clean_ = *clean;
+                changed = true;
+            }
+
+            if (!changed)
+            {
+                ESP_LOGW(TAG, "apply_batch: no valid fields, nothing to send");
+                return;
+            }
+
+            ESP_LOGI(TAG, "Applying batch climate command");
+            this->transmit_state();
+            this->publish_state();
+            // Same child-entity publish pattern as update_from_aeha(), so
+            // select/switch/number entities reflect the new state immediately
+            // rather than waiting for the unit's own IR echo to be received
+            // and synced back.
+            if (weak_dry.has_value() && this->weak_dry_select_ != nullptr)
+                this->weak_dry_select_->publish_state(this->weak_dry_ ? 1 : 0);
+            if (vertical_angle.has_value() && this->vertical_angle_select_ != nullptr)
+                this->vertical_angle_select_->publish_state(this->vertical_angle_ - 1);
+            if (horizontal_angle.has_value() && this->horizontal_angle_select_ != nullptr)
+                this->horizontal_angle_select_->publish_state(this->horizontal_angle_ - 1);
+            if (temp_auto_offset.has_value() && this->temp_auto_offset_number_ != nullptr)
+                this->temp_auto_offset_number_->publish_state(this->temp_auto_offset_);
+            if (clean.has_value() && this->internal_clean_switch_ != nullptr)
+                this->internal_clean_switch_->publish_state(this->clean_);
+        }
+
         void Fujitsu264Climate::transmit_state()
         {
             this->apply_state();
